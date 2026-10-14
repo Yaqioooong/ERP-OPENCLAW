@@ -48,6 +48,7 @@ async def lifespan(app: FastAPI):
 
         from agent.backends.sandbox_setup import shutdown_sandboxes
         await shutdown_sandboxes()
+        await agent_loader.close()
 
 
 # 创建 FastAPI 应用

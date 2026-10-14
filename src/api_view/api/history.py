@@ -151,7 +151,7 @@ def format_tool_calls(msg: Any) -> Optional[List[Dict[str, Any]]]:
 
 def serialize_messages_from_checkpoint(messages: list) -> list:
     """
-    将 MongoDB checkpoint 中存储的 LangChain 消息列表
+    将 Redis checkpoint 中存储的 LangChain 消息列表
     转换为前端需要的 Message 格式
 
     改进点：
@@ -318,11 +318,11 @@ async def get_session_messages(thread_id: str):
     """
     获取会话消息历史
 
-    优先从 MongoDB display_messages 集合读取（包含子代理消息），
+    优先从 Redis session display key 读取（包含子代理消息），
     如不存在则回退到 checkpoint 序列化（兼容旧会话数据）。
     """
     try:
-        # 优先从 MongoDB 读取流式过程中保存的完整展示消息
+        # 优先从 Redis 读取流式过程中保存的完整展示消息
         serialized = await agent_loader.get_display_messages(thread_id)
 
         if not serialized:

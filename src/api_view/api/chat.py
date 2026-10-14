@@ -9,6 +9,7 @@ import uuid
 import re
 import os
 import tempfile
+import traceback
 from datetime import datetime
 from typing import AsyncIterator
 
@@ -239,7 +240,7 @@ async def stream_chat_response(
     当 Agent 触发中断时（request_order_info 数据补充 / order_create|update HITL 审批），
     流会发送 interrupt 事件后结束。前端收集用户决策后通过 /resume 端点恢复。
 
-    同时累积完整的展示消息列表（包含子代理消息），在流结束后存入 MongoDB。
+    同时累积完整的展示消息列表（包含子代理消息），在流结束后存入 Redis。
     """
     context = {"user_id": "guoyaxing", "username": "guoyaxing"}
     config = agent_loader.create_config(thread_id)
@@ -346,7 +347,7 @@ async def stream_chat_response(
                     if not (dm["role"] == "assistant" and not dm.get("content"))
                 ]
 
-                # 保存部分展示消息到 MongoDB（中断前的消息状态）
+                # 保存部分展示消息到 Redis（中断前的消息状态）
                 # 注意：resume 模式下 display_messages 已含历史，保存时会覆盖旧记录
                 await agent_loader.save_display_messages(thread_id, cleaned)
                 write_debug_log(debug_log, "SAVE_DISPLAY_INTERRUPT", {
@@ -531,7 +532,7 @@ async def stream_chat_response(
             if not (dm["role"] == "assistant" and not dm.get("content"))
         ]
 
-        # 保存完整展示消息到 MongoDB（包含子代理消息）
+        # 保存完整展示消息到 Redis（包含子代理消息）
         # 多轮对话：追加到已有消息，而非覆盖（每轮调用 save 时 display_messages 仅含当前轮）
         if resume_data is None:
             # 初始对话：追加到已有历史
@@ -559,10 +560,17 @@ async def stream_chat_response(
         })
 
     except Exception as e:
-        write_debug_log(debug_log, "STREAM_ERROR", {"error": str(e)})
+        # 不要只记录 str(e)：部分异步/流式异常的字符串为空，会让前端只能看到空错误。
+        error_detail = {
+            "error": str(e),
+            "error_repr": repr(e),
+            "error_type": type(e).__name__,
+            "traceback": traceback.format_exc(),
+        }
+        write_debug_log(debug_log, "STREAM_ERROR", error_detail)
         yield create_sse_message({
             "type": "error",
-            "message": str(e)
+            "message": str(e) or f"{type(e).__name__}: 流式对话执行失败，请查看后端日志"
         })
 
 

@@ -4,18 +4,16 @@
 每个用户维护一个独立的 OpenSandbox，同一个用户的多条对话线程共享。
 启动时预热一个沙箱，第一个用户连接时直接认领，无需等待创建。
 
-沙箱 ID 通过 MongoDB 持久化，重启后可重连到已有沙箱。
+沙箱 ID 通过 Redis 持久化，重启后可重连到已有沙箱。
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
-
-from pymongo import MongoClient
+from redis import Redis
 
 from agent.backends.sandbox_proxy import SandboxBackendProxy
-from agent.config import SANDBOX_CONFIG
+from agent.config import REDIS_CLIENT, REDIS_SANDBOX_PREFIX, SANDBOX_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -28,26 +26,41 @@ SANDBOX_BACKENDS: dict[str, SandboxBackendProxy] = {}
 _warm_reserve: SandboxBackendProxy | None = None
 _warm_lock = asyncio.Lock()
 
-_mongo_client: MongoClient | None = None
-_collection = None
+_redis_client: Redis | None = None
 
 
-def _sandbox_collection():
-    if _mongo_client is None:
+def _sandbox_key(user_id: str) -> str:
+    return f"{REDIS_SANDBOX_PREFIX}{user_id}"
+
+
+def _save_binding(user_id: str, sandbox_id: str) -> None:
+    if _redis_client is None:
         raise RuntimeError("沙箱管理器未初始化，请先调用 initialize()")
-    from agent.config import MONGODB_DB_NAME
-    return _mongo_client[MONGODB_DB_NAME][SANDBOX_COLLECTION]
+    _redis_client.hset(_sandbox_key(user_id), mapping={"sandbox_id": sandbox_id})
+
+
+def _get_binding(user_id: str) -> dict | None:
+    if _redis_client is None:
+        raise RuntimeError("沙箱管理器未初始化，请先调用 initialize()")
+    value = _redis_client.hget(_sandbox_key(user_id), "sandbox_id")
+    if not value:
+        return None
+    return {"sandbox_id": value.decode("utf-8") if isinstance(value, bytes) else value}
+
+
+def _delete_binding(user_id: str) -> None:
+    if _redis_client is not None:
+        _redis_client.delete(_sandbox_key(user_id))
 
 
 # ---- 公开 API ----
 
 
-async def initialize(mongo_client: MongoClient) -> None:
-    """启动时初始化 MongoDB 连接。"""
-    global _mongo_client, _collection
-    _mongo_client = mongo_client
-    _collection = _sandbox_collection()
-    _collection.create_index("user_id", unique=True)
+async def initialize(redis_client: Redis | None = None) -> None:
+    """启动时初始化 Redis 连接。"""
+    global _redis_client
+    _redis_client = redis_client or REDIS_CLIENT
+    _redis_client.ping()
     logger.info("沙箱管理器已初始化")
 
 
@@ -71,7 +84,7 @@ async def ensure_sandbox_for_user(user_id: str) -> SandboxBackendProxy:
 
     0. _warm_reserve 有货 → 认领分配给 user
     1. 内存缓存命中 → ping 健康检查 → 失败则重建
-    2. MongoDB 有 sandbox_id → connect(id) → 失败则重建
+    2. Redis 有 sandbox_id → connect(id) → 失败则重建
     3. 无任何记录 → 创建新沙箱
     """
     # 状态 1: 内存缓存命中
@@ -94,21 +107,13 @@ async def ensure_sandbox_for_user(user_id: str) -> SandboxBackendProxy:
             sandbox_id = proxy.id
 
             SANDBOX_BACKENDS[user_id] = proxy
-            _sandbox_collection().update_one(
-                {"user_id": user_id},
-                {"$set": {
-                    "sandbox_id": sandbox_id,
-                    "updated_at": datetime.now(timezone.utc),
-                    "created_at": datetime.now(timezone.utc),
-                }},
-                upsert=True,
-            )
+            _save_binding(user_id, sandbox_id)
             logger.info("用户 %s 认领了预热沙箱: %s", user_id, sandbox_id)
             asyncio.create_task(_replenish_warm())
             return proxy
 
-    # 状态 2: MongoDB 重连
-    doc = _sandbox_collection().find_one({"user_id": user_id})
+    # 状态 2: Redis 重连
+    doc = _get_binding(user_id)
     if doc and doc.get("sandbox_id"):
         sandbox_id = doc["sandbox_id"]
         logger.info("用户 %s 尝试重连沙箱: %s", user_id, sandbox_id)
@@ -129,10 +134,7 @@ async def ensure_sandbox_for_user(user_id: str) -> SandboxBackendProxy:
 
         proxy = SandboxBackendProxy(sandbox_backend)
         SANDBOX_BACKENDS[user_id] = proxy
-        _sandbox_collection().update_one(
-            {"user_id": user_id},
-            {"$set": {"updated_at": datetime.now(timezone.utc)}},
-        )
+        _save_binding(user_id, sandbox_id)
         return proxy
 
     # 状态 3: 无记录，创建新沙箱
@@ -156,7 +158,7 @@ async def recreate_user_sandbox(user_id: str) -> SandboxBackendProxy:
     公开的沙箱重建方法，供 SandboxHealthMiddleware 在检测到沙箱不可用时调用。
 
     创建新沙箱（含 skills 播种 + venv），替换 proxy 内的 backend，
-    删除旧沙箱，更新 MongoDB 绑定。不包含 AGENTS.md 上传，由调用方负责。
+    删除旧沙箱，更新 Redis 绑定。不包含 AGENTS.md 上传，由调用方负责。
     """
     proxy = SANDBOX_BACKENDS.get(user_id)
     return await _recreate_sandbox(user_id, proxy)
@@ -175,13 +177,13 @@ async def cleanup_user(user_id: str) -> None:
         except Exception:
             logger.warning("删除沙箱 %s 失败", proxy.id, exc_info=True)
 
-    _sandbox_collection().delete_one({"user_id": user_id})
+    _delete_binding(user_id)
     logger.info("用户 %s 沙箱已清理", user_id)
 
 
 async def shutdown() -> None:
     """清理所有沙箱（含预热），释放资源。"""
-    global _warm_reserve, _mongo_client
+    global _warm_reserve, _redis_client
     logger.info("正在清理所有沙箱...")
 
     if _warm_reserve is not None:
@@ -198,9 +200,9 @@ async def shutdown() -> None:
     for user_id in list(SANDBOX_BACKENDS.keys()):
         await cleanup_user(user_id)
 
-    if _mongo_client is not None:
-        _mongo_client.close()
-        _mongo_client = None
+    if _redis_client is not None and _redis_client is not REDIS_CLIENT:
+        _redis_client.close()
+    _redis_client = None
 
     logger.info("沙箱管理器已关闭")
 
@@ -219,15 +221,7 @@ async def _create_sandbox_for_user(user_id: str) -> SandboxBackendProxy:
     proxy = SandboxBackendProxy(sandbox_backend)
     SANDBOX_BACKENDS[user_id] = proxy
 
-    _sandbox_collection().update_one(
-        {"user_id": user_id},
-        {"$set": {
-            "sandbox_id": sandbox_id,
-            "updated_at": datetime.now(timezone.utc),
-            "created_at": datetime.now(timezone.utc),
-        }},
-        upsert=True,
-    )
+    _save_binding(user_id, sandbox_id)
 
     logger.info("用户 %s 沙箱创建完成: %s", user_id, sandbox_id)
     return proxy
@@ -250,7 +244,7 @@ async def _recreate_sandbox(
         SANDBOX_BACKENDS[user_id] = existing_proxy
 
     # 尝试删除旧沙箱
-    old_doc = _sandbox_collection().find_one({"user_id": user_id})
+    old_doc = _get_binding(user_id)
     if old_doc and old_doc.get("sandbox_id"):
         old_id = old_doc["sandbox_id"]
         try:
@@ -262,13 +256,7 @@ async def _recreate_sandbox(
         except Exception:
             pass
 
-    _sandbox_collection().update_one(
-        {"user_id": user_id},
-        {"$set": {
-            "sandbox_id": sandbox_id,
-            "updated_at": datetime.now(timezone.utc),
-        }},
-    )
+    _save_binding(user_id, sandbox_id)
 
     logger.info("用户 %s 沙箱重建完成: %s", user_id, sandbox_id)
     return existing_proxy

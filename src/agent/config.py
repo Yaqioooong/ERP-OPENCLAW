@@ -1,13 +1,14 @@
+import os
 from datetime import timedelta
 from pathlib import Path
 
 import httpx
 from langchain.chat_models import init_chat_model
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.mongodb import MongoDBSaver
-from langgraph.store.memory import InMemoryStore
+from langgraph.checkpoint.redis import AsyncRedisSaver
+from langgraph.store.redis import RedisStore
 from opensandbox.config import ConnectionConfigSync
-from pymongo import MongoClient
+from redis import Redis
 
 from agent.env_utils import (
     DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL,
@@ -22,7 +23,7 @@ MAIN_MODEL = ChatOpenAI(
     temperature=1.1,
     openai_api_key=DEEPSEEK_API_KEY,
     openai_api_base=DEEPSEEK_BASE_URL,
-    max_tokens=2560000,
+    max_tokens=256000,
     model_kwargs={
         "extra_body": {
             "thinking": {"type": "disabled"}
@@ -35,7 +36,7 @@ SUMMARY_MODEL = ChatOpenAI(
     temperature=0.3,
     openai_api_key=DEEPSEEK_API_KEY,
     openai_api_base=DEEPSEEK_BASE_URL,
-    max_tokens=2560000,
+    max_tokens=256000,
     model_kwargs={
         "extra_body": {
             "thinking": {"type": "disabled"}
@@ -107,20 +108,34 @@ SCOPE_MAP = {
 
 # ---------- 中间件参数 ----------
 
-# ---------- MongoDB 配置（用于持久化 Agent 短期记忆/checkpoint） ----------
-MONGODB_URI = "mongodb://root:1021@127.0.0.1:27017/?authSource=admin"
-MONGODB_DB_NAME = "langchain_db"
-MONGODB_CHECKPOINT_COLLECTION = "checkpoints"
+# ---------- Redis 持久化存储 ----------
+REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+REDIS_THREAD_SET_KEY = "erp:threads"
+REDIS_DISPLAY_PREFIX = "erp:session_display:"
+REDIS_SESSION_META_PREFIX = "erp:session_meta:"
+REDIS_SANDBOX_PREFIX = "erp:sandbox:"
 
-# ---------- 持久化存储 ----------
-# InMemoryStore: 开发阶段使用。生产环境替换为持久 Store。
-STORE = InMemoryStore()
+# Redis 作为 LangGraph Checkpointer 和跨线程 Store 的统一后端。
+REDIS_CLIENT = Redis.from_url(REDIS_URL, decode_responses=False)
+# Async LangGraph execution (`agent.astream`/`agent.ainvoke`) calls the
+# checkpointer's async methods.  RedisSaver only implements the synchronous
+# interface, so using it here makes every chat request fail with
+# `NotImplementedError` from `BaseCheckpointSaver.aget_tuple`.
+#
+# AsyncRedisSaver must be created inside a running event loop.  It is therefore
+# initialized by AgentLoader during FastAPI startup, before main_agent is
+# imported (main_agent imports this module-level value).
+CHECKPOINTER = None
 
-# MongoDBSaver: Agent 对话状态的 MongoDB 持久化 checkpointer。
-# 支持 Human-in-the-Loop（interrupt 状态持久化）和跨重启对话恢复。
-_mongodb_client = MongoClient(MONGODB_URI)
-CHECKPOINTER = MongoDBSaver(
-    client=_mongodb_client,
-    db_name=MONGODB_DB_NAME,
-    checkpoint_collection_name=MONGODB_CHECKPOINT_COLLECTION,
-)
+
+async def initialize_redis_checkpointer():
+    """Create and initialize the async Redis checkpointer once per app loop."""
+    global CHECKPOINTER
+    if CHECKPOINTER is None:
+        CHECKPOINTER = AsyncRedisSaver(redis_url=REDIS_URL)
+        await CHECKPOINTER.setup()
+    return CHECKPOINTER
+
+
+STORE = RedisStore(REDIS_CLIENT)
+STORE.setup()
