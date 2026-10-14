@@ -1,0 +1,84 @@
+# =========================
+# Secrets and local settings
+# =========================
+.env
+.env.*
+!.env.example
+*.local
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+.venv/
+venv/
+env/
+ENV/
+
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# =========================
+# Application runtime data
+# =========================
+/logs/
+*.log
+/tmp/
+/download/
+/src/download/
+/.langgraph_api/
+
+# Local databases and dumps.
+*.sqlite
+*.sqlite3
+*.db
+*.sql
+
+# =========================
+# Frontend / Node / Vite
+# =========================
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# =========================
+# IDE and OS files
+# =========================
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+.vscode/
+.fleet/
+
+# Keep project-level IntelliJ metadata that is already versioned,
+# but ignore user-specific workspace files.
+.idea/workspace.xml
+.idea/usage.statistics.xml
+.idea/shelf/
+.idea/httpRequests/
+
+# =========================
+# Temporary / backup files
+# =========================
+*.swp
+*.swo
+*~
+*.tmp
+*.bak
