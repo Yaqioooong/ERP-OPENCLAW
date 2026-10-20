@@ -296,6 +296,12 @@ async function handleSend(message) {
         // ★ 中断检测回调
         onInterrupt: (data) => {
           console.log('[App] 检测到中断:', data.interrupt_type)
+          // interrupt 事件会提前结束流，不会触发 onDone；保存 thread_id，
+          // 否则 handleResume 会因 currentThreadId 为空直接返回。
+          if (data.thread_id && !currentThreadId.value) {
+            currentThreadId.value = data.thread_id
+            loadSessions()
+          }
           // 兜底：将所有 calling 状态的工具标记为 done
           for (const m of messages.value) {
             if (m.role === 'tool' && m.tool_status === 'calling') {
@@ -460,6 +466,10 @@ async function handleResume(resumeData) {
         // ★ 恢复后仍可能再次中断（如：先数据补充 → 再 HITL 审批）
         onInterrupt: (data) => {
           console.log('[App] 恢复后再次中断:', data.interrupt_type)
+          if (data.thread_id && !currentThreadId.value) {
+            currentThreadId.value = data.thread_id
+            loadSessions()
+          }
           for (const m of messages.value) {
             if (m.role === 'tool' && m.tool_status === 'calling') {
               m.tool_status = 'done'

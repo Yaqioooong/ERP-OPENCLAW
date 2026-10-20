@@ -188,7 +188,7 @@ recent_queries:                  # 最近 5 条分析需求摘要
 |------|------|
 | 收到子 Agent 返回的长篇报告 | **必须**调用 `compact_conversation` |
 | 对话超过 6 轮且上次压缩距今超过 3 轮 | 主动调用 `compact_conversation` |
-| 用户连续问了多个不同方向的问题 | 主动调用 `compact_conversation` |
+| 用户连续问了大于3个不同方向的问题 | 主动调用 `compact_conversation` |
 | 系统自动触发摘要 | 正常继续工作，无需额外操作 |
 
 ---

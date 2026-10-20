@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 GROUP_PART = "part"  # 零配件分组
 GROUP_SUPPLIER = "supplier"  # 供应商和零配件分组
 
+
 class SupplierQueryInput(BaseModel):
     """供应商查询参数模型"""
     name: str = Field(..., description="供应商名称（模糊查询），必填")
@@ -24,7 +25,8 @@ class PartQueryInput(BaseModel):
     size: Optional[int] = Field(10, description="每页大小")
     name: Optional[str] = Field(None, description="零件名称（模糊查询）,可以不传，则搜索所有采购零部件")
     category: Optional[str] = Field(None, description="分类(发动机类/车架类/电气类/制动类/传动类/外观件)")
-    supplierId: Optional[int] = Field(None, description="供应商ID，根据供应商查询采购零件列表，可以先根据供应商的名字查询出供应商ID。")
+    supplierId: Optional[int] = Field(None,
+                                      description="供应商ID，根据供应商查询采购零件列表，可以先根据供应商的名字查询出供应商ID。")
 
 
 class OrderDetailItem(BaseModel):
@@ -70,6 +72,12 @@ class OrderSearchInput(BaseModel):
     startDate: Optional[str] = Field(None, description="开始日期（yyyy-MM-dd 格式）")
     endDate: Optional[str] = Field(None, description="结束日期（yyyy-MM-dd 格式）")
 
+
+class InventorySearchInput(BaseModel):
+    current: Optional[int] = Field(default=1, description="当前页码")
+    size: Optional[int] = Field(default=10, description="每页大小")
+    partName: Optional[str] = Field(None, description="零部件名称（模糊查询）")
+    warehouseLocation: Optional[str] = Field(None, description="仓库位置")
 
 # create_deep_agent()
 # create_summarization_tool_middleware

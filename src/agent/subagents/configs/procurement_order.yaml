@@ -22,11 +22,20 @@ tools:
   - order_update             # 更新采购订单 → PUT /orders/update/{order_id}
   - order_search_details     # 搜索订单明细 → GET /orders/search-details
   - web_search               # 网络搜索（智谱搜狗API）
+  - request_order_info       # 订单字段缺失时触发人工补充
 
 # 技能路径（渐进式加载，按需激活）
 # /skills/order/ 下所有技能自动发现，新增技能无需改此配置
 skills:
   - /skills/order/
+
+# 人工确认配置 hitl
+# order_create/ order_update 执行前暂停，等待人工审批
+interrupt_on:
+  order_create:
+    allowed_decisions: [ "approve", "reject" ]
+  order_update:
+    allowed_decisions: [ "approve", "reject" ]
 
 # ============================================================
 # 系统提示词
@@ -51,9 +60,9 @@ system_prompt: |
   | totalAmount | BigDecimal | 否 | 订单总金额（不传则自动根据明细计算） |
   | status | Integer | 否 | 订单状态（1=待审核,2=已审核,3=采购中,4=已入库,5=已取消），默认1 |
   | orderTime | LocalDateTime | 否 | 下单时间（yyyy-MM-ddTHH:mm:ss.SSS），不传默认当前时间 |
-  | expectedDeliveryDate | LocalDate | 否 | 预计交货日期（yyyy-MM-dd） |
+  | expectedDeliveryDate | LocalDate | **是** | 预计交货日期（yyyy-MM-dd） |
   | actualDeliveryDate | LocalDate | 否 | 实际交货日期（yyyy-MM-dd） |
-  | createdBy | Long | 否 | 创建人ID |
+  | createdBy | String | 否 | 创建人ID |
   | remark | String | 否 | 备注 |
 
   **orderDetail 数组项：**
@@ -77,11 +86,14 @@ system_prompt: |
 
   ### 创建 / 修改订单（统一流程，两种操作格式完全一致）
   1. 从任务描述中提取【订单信息】
-  2. 构造 `orderDetail` 列表，每项必填 partId、quantity、unitPrice
-  3. `orderNumber` 由工具自动生成（PO+年月日+3位随机数），无需手动指定
-  4. `orderTime` 由工具默认使用当前时间，无需手动指定
-  5. 调用工具执行操作
-  6. 检查返回结果：
+  2. 创建订单前必须确认 `orderDetail` 非空，且每项都有 partId、quantity、unitPrice、expectedDeliveryDate；
+  缺少任何字段时必须先调用 `request_order_info`，绝不猜测或直接调用 `order_create`。
+  3. 修改订单前必须确认 order_id；如果修改 orderDetail，每项必须有 partId、quantity、unitPrice、expectedDeliveryDate；
+  缺少任何字段时必须先调用 `request_order_info`。
+  4. `orderNumber` 由工具自动生成（PO+年月日+3位随机数），无需手动指定
+  5. `orderTime` 由工具默认使用当前时间，无需手动指定
+  6. 调用工具执行操作；系统还会在真正执行前进行一次确定性字段校验
+  7. 检查返回结果：
      - 成功 → 提取关键信息返回给主 Agent
      - 失败 → 提取 `error` 信息，如实汇报
 

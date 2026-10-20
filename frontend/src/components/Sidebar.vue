@@ -2,9 +2,6 @@
   <aside class="sidebar">
     <!-- 侧边栏头部 -->
     <div class="sidebar-header">
-      <div class="logo">
-        <img class="logo-icon" src="https://www-static.mashibing.com/_nuxt/img/logo.69f6ec8.svg" alt="logo" />
-      </div>
       <button class="new-chat-btn" @click="$emit('new-chat')">
         <span class="icon">+</span>
         新建对话

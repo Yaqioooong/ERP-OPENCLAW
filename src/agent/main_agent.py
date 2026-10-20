@@ -27,7 +27,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StoreBackend
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
-    ToolCallLimitMiddleware,
+    ToolCallLimitMiddleware, TodoListMiddleware,
 )
 from langchain_core.runnables import RunnableConfig
 
@@ -62,6 +62,7 @@ from agent.tools.hitl_tools import request_order_info
 from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
 from agent.tools.mcp_client import load_mcp_tools
+from agent.tools.order_guard import build_guarded_order_tools
 from agent.tools.web_search import web_search
 
 def _user_namespace(rt):
@@ -158,6 +159,9 @@ async def create_main_agent(
         logger.exception("MCP 工具加载失败")
         raise RuntimeError("MCP 工具加载失败，无法创建 Agent")
 
+    # 订单工具在进入子 Agent 前包一层确定性字段校验，缺字段时自动 HITL。
+    order_mcp_tools = build_guarded_order_tools(order_mcp_tools)
+
     # --- Phase 3: 可视化工具合并 ---
     logger.info("可视化工具合并...")
     generate_visualization, extra_mcp_tools = create_generate_chart_tool(chart_mcp_tools)
@@ -213,6 +217,7 @@ async def create_main_agent(
     # --- Phase 8: 主 Agent 中间件栈 ---
     logger.info("构建主 Agent 中间件栈...")
     main_middleware = [
+        TodoListMiddleware(),
         ContextInjectionMiddleware(),
         SkillsSyncMiddleware(sandbox_backend),
         UserSkillsRestoreMiddleware(sandbox_backend, SKILLS_STORE_NAMESPACE),
@@ -235,7 +240,7 @@ async def create_main_agent(
         backend=backend,
         store=STORE,
         checkpointer=CHECKPOINTER,
-        context_schema=ProcurementContext
+        context_schema=ProcurementContext,
     )
     logger.info("=== ERP 采购智能助手创建完成 ===")
     return agent_graph
