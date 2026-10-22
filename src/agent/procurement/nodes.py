@@ -3,9 +3,11 @@ from typing import Callable
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
+from agent.procurement.data_provider import UpstreamUnavailable
 from agent.procurement.dependencies import ProcurementDependencies
 from agent.procurement.models import TaskStatus, ProcurementRequest, ApprovalStatus, ExecutionStatus, ProcurementPlan, \
-    OrderExecutionResult, DecisionType, ApprovalDecision, CandidateSet, ValidationIssue, ApprovalRecord
+    OrderExecutionResult, OrderVerificationResult, DecisionType, ApprovalDecision, ApprovalDecisionResult, \
+    CandidateSet, ValidationIssue, ApprovalRecord, ToolError
 from agent.procurement.rules import validate_request_fields, make_idempotency_key, execution_guard_errors, \
     make_approval_id, compute_plan_hash, validate_plan as validate_plan_rules
 from agent.procurement.state import ProcurementState
@@ -173,7 +175,26 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 proposal=proposal,
                 now=deps.now(),
             )
+        except UpstreamUnavailable as exc:
+            retryable = exc.code in {"UPSTREAM_UNAVAILABLE", "UPSTREAM_TIMEOUT"}
+            return {
+                "status": (
+                    TaskStatus.AWAITING_RETRY.value
+                    if retryable
+                    else TaskStatus.FAILED.value
+                ),
+                "failure_stage": "analyze_procurement",
+                "retry_from": "analyze_procurement" if retryable else None,
+                "last_error": {
+                    "code": exc.code,
+                    "retryable": retryable,
+                    "message": str(exc),
+                },
+                "node_history": ["analyze_procurement"],
+                "updated_at": deps.now().isoformat(),
+            }
         except Exception as exc:
+            # 非上游异常视为不可重试，避免把代码 bug 交给用户重试
             return _failed("ANALYSIS_FAILED", f"采购分析失败：{exc}")
         return {
             "inventory_data": [i.model_dump(mode="json") for i in candidates.inventory],
@@ -186,6 +207,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "validation_errors": [],
             "validation_warnings": [],
             "validation_passed": False,
+            "failure_stage": None,
+            "retry_from": None,
             "status": TaskStatus.PLAN_READY.value,
             "node_history": ["analyze_procurement"],
             "updated_at": deps.now().isoformat(),
@@ -404,10 +427,10 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         current_plan = ProcurementPlan.model_validate(state["procurement_plan"])
         current_hash = compute_plan_hash(current_plan)
         if (
-            current_hash != approval_hash
-            or current_plan.version != approval_version
-            or state.get("plan_version") != approval_version
-            or state.get("plan_hash") != approval_hash
+                current_hash != approval_hash
+                or current_plan.version != approval_version
+                or state.get("plan_version") != approval_version
+                or state.get("plan_hash") != approval_hash
         ):
             return _failed(
                 "APPROVAL_STALE",
@@ -436,7 +459,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             DecisionType.MODIFY: ApprovalStatus.STALE.value,
         }[decision.decision]
 
-        ok = await deps.approval_repository.decide(
+        decision_result = await deps.approval_repository.decide(
             approval_id=approval_id,
             task_id=state["task_id"],
             plan_version=approval_version,
@@ -446,8 +469,9 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             decision=decision.decision.value,
             comment=decision.comment,
         )
-        if not ok:
+        if decision_result == ApprovalDecisionResult.STALE:
             return _failed("APPROVAL_STALE", "审批记录状态已变化，不能重复使用。")
+        # APPLIED / ALREADY_APPLIED 都继续：后者是节点重放时的幂等结果。
 
         now_iso = deps.now().isoformat()
         if decision.decision == DecisionType.REJECT:
@@ -520,12 +544,32 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         plan = ProcurementPlan.model_validate(state["procurement_plan"])
         plan_hash = compute_plan_hash(plan)
         key = make_idempotency_key(state["task_id"], plan.version, plan_hash)
-        result: OrderExecutionResult = await deps.order_executor.create_order(
-            task_id=state["task_id"],
-            plan=plan,
-            approval_id=state["approval_id"],
-            idempotency_key=key,
-        )
+        try:
+            result: OrderExecutionResult = await deps.order_executor.create_order(
+                task_id=state["task_id"],
+                plan=plan,
+                approval_id=state["approval_id"],
+                idempotency_key=key,
+            )
+        except TimeoutError as exc:
+            result = OrderExecutionResult(
+                status=ExecutionStatus.UNKNOWN,
+                error=ToolError(
+                    code="ORDER_RESULT_UNKNOWN",
+                    retryable=True,
+                    message=f"订单请求超时，结果未知：{exc}",
+                ),
+            )
+        except Exception as exc:
+            # 写请求异常也可能是“已创建但客户端未收到”，先按 unknown 处理，禁止直接重下。
+            result = OrderExecutionResult(
+                status=ExecutionStatus.UNKNOWN,
+                error=ToolError(
+                    code="ORDER_RESULT_UNKNOWN",
+                    retryable=True,
+                    message=f"订单请求异常，结果未知：{exc}",
+                ),
+            )
         if result.status == ExecutionStatus.NOT_STARTED:
             return {
                 "idempotency_key": key,
@@ -555,20 +599,73 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
     async def verify_order(state, runtime):
         if not _owner_ok(state, runtime):
             return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
-        result = await deps.order_executor.verify_order(
-            task_id=state["task_id"], order_id=state.get("order_id")
-        )
+
+        try:
+            result: OrderVerificationResult = await deps.order_executor.verify_order(
+                task_id=state["task_id"], order_id=state.get("order_id")
+            )
+        except Exception as exc:
+            result = OrderVerificationResult(
+                status=ExecutionStatus.UNKNOWN,
+                order_id=state.get("order_id"),
+                error=ToolError(
+                    code="ORDER_VERIFY_UNAVAILABLE",
+                    retryable=True,
+                    message=f"订单核验失败：{exc}",
+                ),
+            )
+
+        if result.status == ExecutionStatus.SUCCEEDED:
+            return {
+                "order_id": result.order_id or state.get("order_id"),
+                "execution_status": ExecutionStatus.SUCCEEDED.value,
+                "status": TaskStatus.COMPLETED.value,
+                "last_error": None,
+                "failure_stage": None,
+                "retry_from": None,
+                "node_history": ["verify_order"],
+                "updated_at": deps.now().isoformat(),
+            }
+
+        if result.status == ExecutionStatus.FAILED:
+            return {
+                "order_id": result.order_id or state.get("order_id"),
+                "execution_status": ExecutionStatus.FAILED.value,
+                "status": TaskStatus.FAILED.value,
+                "last_error": result.error.model_dump() if result.error else {
+                    "code": "ORDER_VERIFY_FAILED",
+                    "retryable": False,
+                    "message": "订单核验确认失败。",
+                },
+                "node_history": ["verify_order"],
+                "updated_at": deps.now().isoformat(),
+            }
+
+        # 仍然无法确认：进入可恢复重试，不自动重新创建订单
         return {
             "order_id": result.order_id or state.get("order_id"),
-            "execution_status": result.status.value,
-            "status": (
-                TaskStatus.COMPLETED.value
-                if result.status == ExecutionStatus.SUCCEEDED
-                else TaskStatus.FAILED.value
+            "execution_status": ExecutionStatus.UNKNOWN.value,
+            "status": TaskStatus.AWAITING_RETRY.value,
+            "failure_stage": "verify_order",
+            "retry_from": "verify_order",
+            "last_error": (
+                result.error.model_dump()
+                if result.error
+                else {
+                    "code": "ORDER_RESULT_UNKNOWN",
+                    "retryable": True,
+                    "message": "订单结果仍不确定，请继续核验。",
+                }
             ),
-            "last_error": result.error.model_dump() if result.error else None,
             "node_history": ["verify_order"],
             "updated_at": deps.now().isoformat(),
+        }
+
+    async def cancel_task(state, runtime):
+        return {
+            "status": TaskStatus.CANCELLED.value,
+            "updated_at": deps.now().isoformat(),
+            "node_history": ["cancel_task"],
         }
 
     # --------------------------------------------------------
@@ -613,6 +710,46 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "node_history": ["fail_task"],
         }
 
+    # --------------------------------------------------------
+    # retry
+    # --------------------------------------------------------
+    async def retry_gate(state, runtime):
+        if not _owner_ok(state, runtime):
+            return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
+        payload = {
+            "type": "procurement_retry_required",
+            "task_id": state["task_id"],
+            "failed_stage": state.get("failure_stage"),
+            "retry_from": state.get("retry_from"),
+            "retry_count": state.get("retry_count", 0),
+            "last_error": state.get("last_error"),
+            "options": ["retry", "cancel"],
+        }
+        answer = interrupt(payload)
+        action = (answer or {}).get("action", "cancel")
+        if action == "retry":
+            if state.get("retry_count", 0) >= deps.max_task_resumes:
+                return _failed("RETRY_LIMIT_REACHED", "恢复次数超过上限，请重新发起任务。")
+            if state.get("retry_from") not in {"analyze_procurement", "verify_order"}:
+                return _failed("RETRY_TARGET_INVALID", "恢复目标节点无效，请重新发起任务。")
+            return {
+                "retry_action": "retry",
+                "retry_count": state.get("retry_count", 0) + 1,
+                "resume_count": state.get("resume_count", 0) + 1,
+                "failure_stage": None,
+                "last_error": None,
+                "status": TaskStatus.RUNNING.value,
+                "node_history": ["retry_gate"],
+                "updated_at": deps.now().isoformat(),
+            }
+
+        return {
+            "retry_action": "cancel",
+            "status": TaskStatus.CANCELLED.value,
+            "node_history": ["retry_gate"],
+            "updated_at": deps.now().isoformat(),
+        }
+
     return {
         "authorize": authorize,
         "parse_request": parse_request,
@@ -629,5 +766,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         "complete_task": complete_task,
         "reject_task": reject_task,
         "pending_execution": pending_execution,
+        "retry_gate": retry_gate,
+        "cancel_task": cancel_task,
         "fail_task": fail_task,
     }

@@ -5,7 +5,7 @@ from agent.procurement.dependencies import ProcurementDependencies
 from agent.procurement.nodes import build_nodes
 from agent.procurement.routing import after_authorize, after_validate_request, after_parse_request, \
     after_apply_clarification, after_analyze, after_validate_plan, after_prepare_approval, after_request_approval, \
-    after_finalize_approval, after_create_order, after_verify_order
+    after_finalize_approval, after_create_order, after_verify_order, after_retry_gate
 from agent.procurement.state import ProcurementState
 from agent.schema import ProcurementContext
 
@@ -43,7 +43,7 @@ def build_procurement_graph(deps: ProcurementDependencies) -> StateGraph:
     builder.add_conditional_edges(
         "analyze_procurement",
         after_analyze,
-        {"validate_plan": "validate_plan", "fail": "fail_task"}
+        {"validate_plan": "validate_plan", "fail": "fail_task", "retry": "retry_gate"}
     )
     builder.add_conditional_edges(
         "validate_plan",
@@ -78,10 +78,27 @@ def build_procurement_graph(deps: ProcurementDependencies) -> StateGraph:
     builder.add_conditional_edges(
         "verify_order",
         after_verify_order,
-        {"complete": "complete_task", "fail": "fail_task"}
+        {"complete": "complete_task", "fail": "fail_task", "retry": "retry_gate"}
     )
 
-    for terminal in ("complete_task", "pending_execution", "fail_task", "reject_task"):
+    builder.add_conditional_edges(
+        "retry_gate",
+        after_retry_gate,
+        {
+            "analyze_procurement": "analyze_procurement",
+            "verify_order": "verify_order",
+            "cancel": "cancel_task",
+            "fail": "fail_task",
+        },
+    )
+
+    for terminal in (
+        "complete_task",
+        "pending_execution",
+        "fail_task",
+        "reject_task",
+        "cancel_task",
+    ):
         builder.add_edge(terminal, END)
 
     return builder

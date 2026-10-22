@@ -1,12 +1,11 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, Callable
-from zoneinfo import ZoneInfo
 
 from agent.procurement.approval_repository import SqliteApprovalRepository
 from agent.procurement.config import PROCUREMENT_MAX_PLAN_REVISIONS, PROCUREMENT_MAX_CLARIFICATION_ROUNDS, \
-    PROCUREMENT_APPROVAL_TTL_MINUTES, PROCUREMENT_TIMEZONE, PROCUREMENT_ACTIVE_SUPPLIER_STATUSES, PROCUREMENT_DB_PATH, \
-    PROCUREMENT_EXECUTION_ENABLED
+    PROCUREMENT_APPROVAL_TTL_MINUTES, PROCUREMENT_ACTIVE_SUPPLIER_STATUSES, PROCUREMENT_DB_PATH, \
+    PROCUREMENT_EXECUTION_ENABLED, utc_now_in_business_tz
 from agent.procurement.data_provider import McpProcurementDataProvider
 from agent.procurement.deterministic_plan_proposer import DeterministicPlanProposer
 from agent.procurement.models import ProcurementRequest, CandidateSet, PlanProposal
@@ -15,8 +14,11 @@ from agent.procurement.parser import LLMRequestParser
 from agent.procurement.planner import DefaultPlanBuilder
 from agent.procurement.ports import RequestParser, ProcurementDataProvider, PlanProposer, ApprovalRepository, \
     OrderExecutionService
+from agent.procurement.task_repository import SqliteTaskRepository
+from agent.procurement.task_runner import ProcurementTaskRunner
 
 _PROCUREMENT_GRAPH = None
+
 
 class PlanBuilder(Protocol):
     def build(
@@ -46,10 +48,7 @@ class ProcurementDependencies:
     max_clarification_rounds: int = PROCUREMENT_MAX_CLARIFICATION_ROUNDS
     approval_ttl: timedelta = timedelta(minutes=PROCUREMENT_APPROVAL_TTL_MINUTES)
     execution_enabled: bool = False
-
-
-def utc_now_in_business_tz() -> datetime:
-    return datetime.now(ZoneInfo(PROCUREMENT_TIMEZONE))
+    max_task_resumes: int = 3
 
 
 async def build_production_dependencies() -> ProcurementDependencies:
@@ -94,3 +93,33 @@ async def get_procurement_graph():
             deps, agent_config.CHECKPOINTER
         )
     return _PROCUREMENT_GRAPH
+
+
+_TASK_RUNNER: ProcurementTaskRunner | None = None
+
+
+async def get_task_runner() -> ProcurementTaskRunner:
+    global _TASK_RUNNER
+    if _TASK_RUNNER is None:
+        from agent import config as agent_config
+        if agent_config.CHECKPOINTER is None:
+            raise RuntimeError(
+                "CheckPointer 未初始化：请先调用 initialize_redis_checkpointer()"
+            )
+
+        graph = await get_procurement_graph()
+        repository = SqliteTaskRepository(PROCUREMENT_DB_PATH)
+        await repository.setup()
+        _TASK_RUNNER = ProcurementTaskRunner(
+            graph=graph,
+            task_repository=repository
+        )
+        await _TASK_RUNNER.reconcile()
+
+    return _TASK_RUNNER
+
+
+async def close_task_runner() -> None:
+    global _TASK_RUNNER, _PROCUREMENT_GRAPH
+    _TASK_RUNNER = None
+    _PROCUREMENT_GRAPH = None

@@ -142,20 +142,20 @@ def _normalize_part(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_order_detail(
-    detail: dict[str, Any], *, fallback_part: dict[str, Any]
+        detail: dict[str, Any], *, fallback_part: dict[str, Any]
 ) -> dict[str, Any]:
     part_detail = _pick(detail, "partDetail", "part_detail") or {}
     supplier = _pick(detail, "supplier") or {}
 
     part_id = (
-        _to_int(_pick(part_detail, "id", "partId", "part_id"))
-        or _to_int(_pick(detail, "partId", "part_id"))
-        or fallback_part.get("id")
+            _to_int(_pick(part_detail, "id", "partId", "part_id"))
+            or _to_int(_pick(detail, "partId", "part_id"))
+            or fallback_part.get("id")
     )
     part_name = (
-        _pick(part_detail, "name", "partName", "part_name")
-        or _pick(detail, "partName", "part_name")
-        or fallback_part.get("name")
+            _pick(part_detail, "name", "partName", "part_name")
+            or _pick(detail, "partName", "part_name")
+            or fallback_part.get("name")
     )
 
     order_time = _parse_datetime(_pick(detail, "orderTime", "order_time"))
@@ -170,12 +170,12 @@ def _normalize_order_detail(
 
     return {
         "supplier_id": (
-            _to_int(_pick(supplier, "id", "supplierId", "supplier_id"))
-            or _to_int(_pick(detail, "supplierId", "supplier_id"))
+                _to_int(_pick(supplier, "id", "supplierId", "supplier_id"))
+                or _to_int(_pick(detail, "supplierId", "supplier_id"))
         ),
         "supplier_name": (
-            _pick(supplier, "name", "supplierName", "supplier_name")
-            or _pick(detail, "supplierName", "supplier_name")
+                _pick(supplier, "name", "supplierName", "supplier_name")
+                or _pick(detail, "supplierName", "supplier_name")
         ),
         "supplier_status": _to_int(
             _pick(supplier, "status", "supplierStatus", "supplier_status")
@@ -261,7 +261,7 @@ class McpProcurementDataProvider:
         return candidates[0]
 
     async def _inventory(
-        self, request: ProcurementRequest, parts: list[dict[str, Any]]
+            self, request: ProcurementRequest, parts: list[dict[str, Any]]
     ) -> list[InventorySnapshot]:
         snapshots: list[InventorySnapshot] = []
 
@@ -316,10 +316,10 @@ class McpProcurementDataProvider:
         return snapshots
 
     async def _offers(
-        self,
-        request: ProcurementRequest,
-        parts: list[dict[str, Any]],
-        inventory: list[InventorySnapshot],
+            self,
+            request: ProcurementRequest,
+            parts: list[dict[str, Any]],
+            inventory: list[InventorySnapshot],
     ) -> list[SupplierOffer]:
         offers: list[SupplierOffer] = []
 
@@ -350,8 +350,8 @@ class McpProcurementDataProvider:
                 normalized = _normalize_order_detail(detail, fallback_part=part)
                 # 同名物料可能有多条历史，必须按 part_id 过滤，避免拿错价格
                 if (
-                    normalized["part_id"] is not None
-                    and normalized["part_id"] != part["id"]
+                        normalized["part_id"] is not None
+                        and normalized["part_id"] != part["id"]
                 ):
                     continue
                 supplier_id = normalized["supplier_id"]

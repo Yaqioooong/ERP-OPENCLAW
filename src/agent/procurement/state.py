@@ -58,6 +58,12 @@ class ProcurementState(TypedDict, total=False):
     created_at: str
     updated_at: str
 
+    # ---- 恢复 ----
+    retry_from: str | None  # analyze_procurement / verify_order
+    failure_stage: str | None  # 失败发生在哪个节点
+    resume_count: int  # 恢复次数（防止无限恢复）
+    last_checkpoint_id: str | None  # 可选：最近一次快照 ID（诊断）
+
 
 def initial_state(
         *,
@@ -105,6 +111,10 @@ def initial_state(
         "execution_status": ExecutionStatus.NOT_STARTED.value,
         "execution_attempts": 0,
         "last_error": None,
+        "retry_from": None,
+        "failure_stage": None,
+        "resume_count": 0,
+        "last_checkpoint_id": None,
         "status": TaskStatus.NEW.value,
         "node_history": [],
         "created_at": now,

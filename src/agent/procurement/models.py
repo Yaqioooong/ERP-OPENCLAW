@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -24,6 +24,9 @@ class TaskStatus(StrEnum):
     REJECTED = "rejected"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    RUNNING = "running"
+    AWAITING_RETRY = "awaiting_retry"
+    ORPHANED = "orphaned"  # 孤儿
 
 
 class ApprovalStatus(StrEnum):
@@ -47,6 +50,12 @@ class DecisionType(StrEnum):
     APPROVE = "approve"
     REJECT = "reject"
     MODIFY = "modify"
+
+
+class ApprovalDecisionResult(StrEnum):
+    APPLIED = "applied"
+    ALREADY_APPLIED = "already_applied"
+    STALE = "stale"
 
 
 # ============================================================
@@ -259,3 +268,29 @@ class OrderVerificationResult(BaseModel):
     order_id: str | None = None
     order_number: str | None = None
     error: ToolError | None = None
+
+
+class TaskRecord(BaseModel):
+    task_id: str
+    thread_id: str
+    conversation_id: str | None = None
+    user_id: str
+    status: str
+    current_node: str | None = None
+    retry_from: str | None = None
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    resumed_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class TaskRunResult(BaseModel):
+    task_id: str
+    thread_id: str
+    status: str
+    current_node: str | None = None
+    interrupt: dict[str, Any] | None = None
+    state_summary: dict[str, Any] = {}
+    recoverable: bool = False

@@ -1,7 +1,7 @@
 import pytest
 
 from agent.procurement.approval_repository import SqliteApprovalRepository
-from agent.procurement.models import ApprovalStatus
+from agent.procurement.models import ApprovalDecisionResult, ApprovalStatus
 from tests.factories import make_record
 
 
@@ -29,7 +29,7 @@ async def test_decide_rejects_wrong_plan_hash(tmp_path):
         decision="approve",
         comment=None,
     )
-    assert ok is False
+    assert ok == ApprovalDecisionResult.STALE
 
 
 @pytest.mark.anyio
@@ -50,5 +50,6 @@ async def test_decide_cannot_reuse_approved_record(tmp_path):
     )
     reject_kwargs = {**approve_kwargs, "status": "rejected", "decision": "reject"}
 
-    assert await repo.decide(**approve_kwargs) is True
-    assert await repo.decide(**reject_kwargs) is False
+    assert await repo.decide(**approve_kwargs) == ApprovalDecisionResult.APPLIED
+    assert await repo.decide(**reject_kwargs) == ApprovalDecisionResult.STALE
+    assert await repo.decide(**approve_kwargs) == ApprovalDecisionResult.ALREADY_APPLIED

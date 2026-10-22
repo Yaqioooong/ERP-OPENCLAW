@@ -2,7 +2,7 @@
 from typing import Protocol, Any
 
 from agent.procurement.models import ProcurementRequest, CandidateSet, ValidationIssue, PlanProposal, ApprovalRecord, \
-    ProcurementPlan, OrderExecutionResult, OrderVerificationResult
+    ApprovalDecisionResult, ProcurementPlan, OrderExecutionResult, OrderVerificationResult
 
 
 class RequestParser(Protocol):
@@ -58,7 +58,7 @@ class ApprovalRepository(Protocol):
             decided_by: str,
             decision: str,
             comment: str | None,
-    ) -> bool:
+    ) -> ApprovalDecisionResult:
         ...
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:

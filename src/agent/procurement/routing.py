@@ -23,7 +23,22 @@ def after_apply_clarification(state) -> str:
 
 
 def after_analyze(state) -> str:
-    return "fail" if state.get("status") == TaskStatus.FAILED.value else "validate_plan"
+    if state.get("status") == TaskStatus.AWAITING_RETRY.value:
+        return "retry"
+    if state.get("status") == TaskStatus.FAILED.value:
+        return "fail"
+    return "validate_plan"
+
+
+def after_retry_gate(state) -> str:
+    if state.get("retry_action") == "retry":
+        target = state.get("retry_from")
+        if target in {"analyze_procurement", "verify_order"}:
+            return target
+        return "fail"
+    if state.get("retry_action") == "cancel":
+        return "cancel"
+    return "fail"
 
 
 def after_validate_plan(state) -> str:
@@ -66,4 +81,6 @@ def after_create_order(state) -> str:
 def after_verify_order(state) -> str:
     if state.get("execution_status") == ExecutionStatus.SUCCEEDED.value:
         return "complete"
+    if state.get("status") == TaskStatus.AWAITING_RETRY.value:
+        return "retry"
     return "fail"

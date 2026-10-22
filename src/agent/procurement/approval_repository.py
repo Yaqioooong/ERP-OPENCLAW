@@ -4,7 +4,7 @@ from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
-from agent.procurement.models import ApprovalRecord
+from agent.procurement.models import ApprovalDecisionResult, ApprovalRecord
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS procurement_approval (
@@ -79,8 +79,7 @@ class SqliteApprovalRepository:
             decided_by: str,
             decision: str,
             comment: str | None,
-    ) -> bool:
-        # 【python小课堂】asyncio.to_thread 是 Python 3.9 引入的一个高层异步工具，它的核心作用是：将一个原本会阻塞事件循环的同步函数，放到一个单独的线程中去执行，而不会卡住整个异步程序。
+    ) -> ApprovalDecisionResult:
         return await asyncio.to_thread(
             self._decide_sync,
             approval_id,
@@ -103,7 +102,7 @@ class SqliteApprovalRepository:
             decided_by: str,
             decision: str,
             comment: str | None,
-    ) -> bool:
+    ) -> ApprovalDecisionResult:
         with closing(self._connect()) as conn:
             conn.executescript(_SCHEMA)
             cursor = conn.execute(
@@ -133,7 +132,22 @@ class SqliteApprovalRepository:
                 ),
             )
             conn.commit()
-            return cursor.rowcount == 1
+            if cursor.rowcount == 1:
+                return ApprovalDecisionResult.APPLIED
+
+            row = conn.execute(
+                "SELECT * FROM procurement_approval WHERE approval_id = ?",
+                (approval_id,),
+            ).fetchone()
+            if (
+                row is not None
+                and row["status"] == status
+                and row["decision"] == decision
+                and row["plan_version"] == plan_version
+                and row["plan_hash"] == plan_hash
+            ):
+                return ApprovalDecisionResult.ALREADY_APPLIED
+            return ApprovalDecisionResult.STALE
 
     async def get(self, approval_id: str) -> ApprovalRecord | None:
         return await asyncio.to_thread(self._get_sync, approval_id)

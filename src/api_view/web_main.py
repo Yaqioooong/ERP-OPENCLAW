@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api_view.web_config import API_TITLE, API_VERSION, API_DESCRIPTION
-from api_view.api import chat, history
+from api_view.api import chat, history, procurement
 from api_view.agent_loader import agent_loader
 
 
@@ -32,6 +32,10 @@ async def lifespan(app: FastAPI):
         # 初始化 Agent
         await agent_loader.initialize()
 
+        # 初始化采购任务 runtime（Checkpointer 已在 agent_loader 中初始化）
+        from agent.procurement.dependencies import get_task_runner
+        await get_task_runner()
+
         print("=" * 50)
         print("DeepAgent Chat API 启动成功!")
         print("=" * 50)
@@ -47,6 +51,9 @@ async def lifespan(app: FastAPI):
         print("=" * 50)
 
         from agent.backends.sandbox_setup import shutdown_sandboxes
+        from agent.procurement.dependencies import close_task_runner
+
+        await close_task_runner()
         await shutdown_sandboxes()
         await agent_loader.close()
 
@@ -79,6 +86,8 @@ app.add_middleware(
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 # 历史记录相关接口
 app.include_router(history.router, prefix="/api", tags=["历史记录"])
+# 采购任务相关接口
+app.include_router(procurement.router, prefix="/api", tags=["采购任务"])
 
 
 # ============================================================
