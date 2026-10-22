@@ -82,3 +82,6 @@ pnpm-debug.log*
 *~
 *.tmp
 *.bak
+# SQLite WAL/SHM（.db 本身已被 *.db 覆盖）
+*.db-wal
+*.db-shm
