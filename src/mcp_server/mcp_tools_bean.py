@@ -79,5 +79,8 @@ class InventorySearchInput(BaseModel):
     partName: Optional[str] = Field(None, description="零部件名称（模糊查询）")
     warehouseLocation: Optional[str] = Field(None, description="仓库位置")
 
+class OrderNumberInput(BaseModel):
+    order_number: str = Field(..., description="ERP 订单编号")
+
 # create_deep_agent()
 # create_summarization_tool_middleware

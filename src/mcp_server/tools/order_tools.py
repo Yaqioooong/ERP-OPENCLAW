@@ -2,12 +2,13 @@ import random
 from datetime import datetime
 from decimal import Decimal
 
-from deepagents import MemoryMiddleware
+import httpx
 from fastmcp import FastMCP, Context
 
 from mcp_server.mcp_tools_bean import OrderInput, OrderSearchInput
 
 GROUP_NAME = "order"
+
 
 # MemoryMiddleware
 
@@ -49,6 +50,29 @@ def _serialize_request(data: dict) -> dict:
     return data
 
 
+def _error_from_response(response: httpx.Response) -> dict:
+    try:
+        body = response.json()
+    except Exception:
+        body = {}
+    code = body.get("code")
+    message = body.get("message") or response.text
+    text = str(message)
+    duplicate = (
+            "已存在" in text
+            or "重复" in text
+            or "duplicate" in text.lower()
+    )
+    return {
+        "error": {
+            "code": "ORDER_DUPLICATE" if duplicate else "ERP_BUSINESS_ERROR",
+            "duplicate": duplicate,
+            "retryable": False,
+            "message": text,
+        }
+    }
+
+
 def register_order_tools(mcp: FastMCP):
     """注册订单分组的所有工具"""
 
@@ -79,12 +103,24 @@ def register_order_tools(mcp: FastMCP):
 
             if result.get("code") != 200:
                 return {
-                    "error": f"API error: code={result.get('code')}, message={result.get('message')}"
+                    "error": {
+                        "code": "ERP_BUSINESS_ERROR",
+                        "duplicate": False,
+                        "retryable": False,
+                        "message": f"code={result.get('code')}, message={result.get('message')}",
+                    }
                 }
 
             return result.get("data", {})
+        except httpx.HTTPStatusError as e:
+            return _error_from_response(e.response)
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": {
+                "code": "ERP_UNAVAILABLE",
+                "duplicate": False,
+                "retryable": True,
+                "message": str(e),
+            }}
 
     @mcp.tool(name=f"{GROUP_NAME}_update")
     async def update_order(order_id: int, update_data: OrderInput, ctx: Context) -> dict:
@@ -148,3 +184,48 @@ def register_order_tools(mcp: FastMCP):
             return result.get("data", [])
         except Exception as e:
             return [f'没有查询到任何信息，而且报错: {e}']
+
+    @mcp.tool(name=f"{GROUP_NAME}_get")
+    async def get_order(order_id: int, ctx: Context) -> dict:
+        http_client = ctx.request_context.lifespan_context.get("http_client")
+        try:
+            response = await http_client.get(f"/orders/get/{order_id}")
+            response.raise_for_status()
+            result = response.json()
+            if result.get("code") != 200:
+                return _error_from_response(response)
+            return result.get("data", {})
+        except httpx.HTTPStatusError as e:
+            return _error_from_response(e.response)
+        except Exception as e:
+            return {
+                "error": {
+                    "code": "ERP_UNAVAILABLE",
+                    "duplicate": False,
+                    "retryable": True,
+                    "message": str(e),
+                }
+            }
+
+    @mcp.tool(name=f"{GROUP_NAME}_get_by_number")
+    async def get_order_by_number(order_number: str, ctx: Context) -> dict:
+        http_client = ctx.request_context.lifespan_context.get("http_client")
+        try:
+            response = await http_client.get(
+                f"/orders/get/{order_number}")
+            response.raise_for_status()
+            result = response.json()
+            if result.get("code") != 200:
+                return _error_from_response(response)
+            return result.get("data", {})
+        except httpx.HTTPStatusError as exc:
+            return _error_from_response(exc.response)
+        except Exception as exc:
+            return {
+                "error": {
+                    "code": "ERP_UNAVAILABLE",
+                    "duplicate": False,
+                    "retryable": True,
+                    "message": str(exc),
+                }
+            }

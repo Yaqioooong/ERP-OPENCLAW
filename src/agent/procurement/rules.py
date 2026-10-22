@@ -479,5 +479,18 @@ def execution_guard_errors(state: dict) -> list[str]:
     return errors
 
 
+def make_order_number(task_id: str, plan_version: int, plan_hash: str) -> str:
+    """生成稳定、可读、可重试服用的 ERP 订单号"""
+    digest = hashlib.sha256(
+        f"order:{task_id}:{plan_version}:{plan_hash}".encode("utf-8")
+    ).hexdigest()[:12].upper()
+
+    date_part = ""
+    parts = task_id.split("-")
+    if len(parts) >= 2 and parts[1].isdigit() and len(parts) == 8:
+        date_part = parts[1]
+    return f"P0{date_part}{digest}"
+
+
 if __name__ == '__main__':
     print(q2(Decimal("100.459")))  # 100.46

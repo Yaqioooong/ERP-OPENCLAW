@@ -8,7 +8,10 @@ from agent.procurement.config import PROCUREMENT_MAX_PLAN_REVISIONS, PROCUREMENT
     PROCUREMENT_EXECUTION_ENABLED, utc_now_in_business_tz
 from agent.procurement.data_provider import McpProcurementDataProvider
 from agent.procurement.deterministic_plan_proposer import DeterministicPlanProposer
+from agent.procurement.erp_order_gateway import McpErpOrderGateway
+from agent.procurement.execution_repository import SqliteExecutionRepository
 from agent.procurement.models import ProcurementRequest, CandidateSet, PlanProposal
+from agent.procurement.order_execution import SafeOrderExecutionService
 from agent.procurement.order_executor import DisabledOrderExecutor
 from agent.procurement.parser import LLMRequestParser
 from agent.procurement.planner import DefaultPlanBuilder
@@ -52,13 +55,25 @@ class ProcurementDependencies:
 
 
 async def build_production_dependencies() -> ProcurementDependencies:
-    # 延迟 import：agent.config 在 import 时会创建 Redis 客户端、执行 STORE.setup()，
-    # 不能放在模块顶层，否则纯规则测试/图测试会被迫依赖 Redis。
     from agent.config import SUMMARY_MODEL
     from agent.tools.mcp_client import load_mcp_tools
-    # 注意：load_mcp_tools 会新建 MCP 连接；后续可抽共享 ToolRegistry
+
     _, analyst_tools, order_tools, _ = await load_mcp_tools()
     tools = {t.name: t for t in [*analyst_tools, *order_tools]}
+
+    approval_repository = SqliteApprovalRepository(PROCUREMENT_DB_PATH)
+    execution_repository = SqliteExecutionRepository(PROCUREMENT_DB_PATH)
+    await execution_repository.setup()
+
+    if PROCUREMENT_EXECUTION_ENABLED:
+        order_executor = SafeOrderExecutionService(
+            execution_repository=execution_repository,
+            approval_repository=approval_repository,
+            gateway=McpErpOrderGateway(tools),
+            now=utc_now_in_business_tz,
+        )
+    else:
+        order_executor = DisabledOrderExecutor()
 
     return ProcurementDependencies(
         request_parser=LLMRequestParser(SUMMARY_MODEL),
@@ -68,10 +83,8 @@ async def build_production_dependencies() -> ProcurementDependencies:
         ),
         plan_proposer=DeterministicPlanProposer(),
         plan_builder=DefaultPlanBuilder(),
-        approval_repository=SqliteApprovalRepository(PROCUREMENT_DB_PATH),
-        # 本步强制禁用真实执行；PROCUREMENT_EXECUTION_ENABLED 只作为
-        # deeper_3 选择真实执行器的开关预留，不在这里放开。
-        order_executor=DisabledOrderExecutor(),
+        approval_repository=approval_repository,
+        order_executor=order_executor,
         now=utc_now_in_business_tz,
         execution_enabled=PROCUREMENT_EXECUTION_ENABLED,
     )

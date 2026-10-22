@@ -294,3 +294,28 @@ class TaskRunResult(BaseModel):
     interrupt: dict[str, Any] | None = None
     state_summary: dict[str, Any] = {}
     recoverable: bool = False
+
+
+class ExecutionRecord(BaseModel):
+    """一笔逻辑订单的执行事实"""
+
+    idempotency_key: str
+    task_id: str
+    plan_version: int
+    plan_hash: str
+    approval_id: str
+    status: ExecutionStatus
+
+    order_id: str | None = None
+    order_number: str | None = None
+
+    attempt_count: int = 0
+    last_error_code: str | None = None
+    last_error_message: str | None = None
+
+    request_payload: dict[str, Any] | None = None
+    response_payload: dict[str, Any] | None = None
+    lease_expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    executed_at: datetime | None = None

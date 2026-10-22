@@ -30,6 +30,21 @@ PROCUREMENT_TIMEZONE = os.getenv("PROCUREMENT_TIMEZONE", "Asia/Shanghai")
 # 供应商“合作中”状态码。不同ERP字典可能不同，先集中配置，后续按真实字典校准
 PROCUREMENT_ACTIVE_SUPPLIER_STATUSES = {1}
 
+# 订单执行租约：EXECUTING 超过该时间可被其他请求接管
+PROCUREMENT_EXECUTION_LEASE_SECONDS = int(
+    os.getenv("PROCUREMENT_EXECUTION_LEASE_SECONDS", "60")
+)
+
+# 单个幂等键最多尝试次数(不包括 UNKNOWN 核验)
+PROCUREMENT_EXECUTION_MAX_ATTEMPTS = int(
+    os.getenv("PROCUREMENT_EXECUTION_MAX_ATTEMPTS", "1")
+)
+
+# 确定性订单号前缀
+PROCUREMENT_ORDER_NUMBER_PREFIX = os.getenv(
+    "PROCUREMENT_ORDER_NUMBER_PREFIX", "P0"
+)
+
 
 def utc_now_in_business_tz() -> datetime:
     return datetime.now(ZoneInfo(PROCUREMENT_TIMEZONE))

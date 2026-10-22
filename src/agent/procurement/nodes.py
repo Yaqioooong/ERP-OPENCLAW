@@ -544,6 +544,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         plan = ProcurementPlan.model_validate(state["procurement_plan"])
         plan_hash = compute_plan_hash(plan)
         key = make_idempotency_key(state["task_id"], plan.version, plan_hash)
+
         try:
             result: OrderExecutionResult = await deps.order_executor.create_order(
                 task_id=state["task_id"],
@@ -561,7 +562,6 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 ),
             )
         except Exception as exc:
-            # 写请求异常也可能是“已创建但客户端未收到”，先按 unknown 处理，禁止直接重下。
             result = OrderExecutionResult(
                 status=ExecutionStatus.UNKNOWN,
                 error=ToolError(
@@ -570,6 +570,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     message=f"订单请求异常，结果未知：{exc}",
                 ),
             )
+
         if result.status == ExecutionStatus.NOT_STARTED:
             return {
                 "idempotency_key": key,
@@ -579,16 +580,25 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 "node_history": ["create_order"],
                 "updated_at": deps.now().isoformat(),
             }
+
+        if result.status == ExecutionStatus.FAILED:
+            return {
+                "idempotency_key": key,
+                "order_id": result.order_id,
+                "execution_status": result.status.value,
+                "status": TaskStatus.FAILED.value,
+                "last_error": result.error.model_dump() if result.error else None,
+                "node_history": ["create_order"],
+                "updated_at": deps.now().isoformat(),
+            }
+
         return {
             "idempotency_key": key,
             "order_id": result.order_id,
             "execution_status": result.status.value,
-            "status": (
-                TaskStatus.VERIFYING.value
-                if result.status in {ExecutionStatus.SUCCEEDED, ExecutionStatus.UNKNOWN}
-                else TaskStatus.FAILED.value
-            ),
+            "status": TaskStatus.VERIFYING.value,
             "last_error": result.error.model_dump() if result.error else None,
+            "execution_attempts": state.get("execution_attempts", 0) + 1,
             "node_history": ["create_order"],
             "updated_at": deps.now().isoformat(),
         }
@@ -602,7 +612,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
 
         try:
             result: OrderVerificationResult = await deps.order_executor.verify_order(
-                task_id=state["task_id"], order_id=state.get("order_id")
+                task_id=state["task_id"],
+                order_id=state.get("order_id"),
             )
         except Exception as exc:
             result = OrderVerificationResult(
@@ -641,7 +652,6 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 "updated_at": deps.now().isoformat(),
             }
 
-        # 仍然无法确认：进入可恢复重试，不自动重新创建订单
         return {
             "order_id": result.order_id or state.get("order_id"),
             "execution_status": ExecutionStatus.UNKNOWN.value,
