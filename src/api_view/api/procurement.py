@@ -1,9 +1,15 @@
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.params import Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Literal
 
-from agent.procurement.dependencies import get_task_runner, get_order_reconciler
+from agent.procurement.dependencies import (
+    get_order_reconciler,
+    get_task_event_service,
+    get_task_runner,
+)
+from agent.procurement.task_events import encode_sse
 from agent.procurement.task_runner import TaskCheckpointMissing
 
 router = APIRouter()
@@ -75,6 +81,56 @@ async def resume_task(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except TaskCheckpointMissing as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/procurement/tasks/{task_id}/events")
+async def stream_task_events(
+        task_id: str,
+        after: int = Query(0, ge=0),
+        last_event_id: str | None = Header(
+            default=None, alias="Last-Event-ID"
+        ),
+        user=Depends(get_current_user),
+):
+    try:
+        runner = await get_task_runner()
+        record = await runner.get_record(task_id)
+        roles = set(user[2]) if len(user) > 2 else set()
+        if record is None or (
+                record.user_id != user[0]
+                and not (roles & {"approver", "admin"})
+        ):
+            raise HTTPException(status_code=403, detail="无权读取该任务事件")
+
+        cursor = after
+        if last_event_id:
+            try:
+                cursor = max(cursor, int(last_event_id))
+            except ValueError:
+                pass
+
+        service = await get_task_event_service()
+
+        async def generator():
+            async for event in service.stream(
+                    task_id=task_id,
+                    after_sequence=cursor,
+            ):
+                yield encode_sse(event)
+
+        return StreamingResponse(
+            generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except HTTPException:
+        raise
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

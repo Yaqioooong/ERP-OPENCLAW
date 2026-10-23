@@ -25,6 +25,11 @@ from agent.procurement.planner import DefaultPlanBuilder
 from agent.procurement.ports import RequestParser, ProcurementDataProvider, PlanProposer, ApprovalRepository, \
     OrderExecutionService
 from agent.procurement.reconciliation_worker import ReconciliationWorker
+from agent.procurement.task_events import (
+    InMemoryTaskEventBroker,
+    PostgresTaskEventStore,
+    TaskEventService,
+)
 from agent.procurement.task_repository import PostgresTaskRepository
 from agent.procurement.task_runner import ProcurementTaskRunner
 
@@ -35,6 +40,7 @@ _PROCUREMENT_DEPS = None
 _RECONCILER = None
 _WORKER = None
 _DATABASE = None
+_EVENT_SERVICE = None
 
 
 class PlanBuilder(Protocol):
@@ -176,6 +182,18 @@ async def get_procurement_graph():
 _TASK_RUNNER: ProcurementTaskRunner | None = None
 
 
+async def get_task_event_service() -> TaskEventService:
+    global _EVENT_SERVICE
+    if _EVENT_SERVICE is None:
+        store = PostgresTaskEventStore(await get_database())
+        await store.setup()
+        _EVENT_SERVICE = TaskEventService(
+            store=store,
+            broker=InMemoryTaskEventBroker(),
+        )
+    return _EVENT_SERVICE
+
+
 async def get_task_runner() -> ProcurementTaskRunner:
     global _TASK_RUNNER
     if _TASK_RUNNER is None:
@@ -190,7 +208,8 @@ async def get_task_runner() -> ProcurementTaskRunner:
         await repository.setup()
         _TASK_RUNNER = ProcurementTaskRunner(
             graph=graph,
-            task_repository=repository
+            task_repository=repository,
+            event_service=await get_task_event_service(),
         )
         await _TASK_RUNNER.reconcile()
 
@@ -224,11 +243,12 @@ async def stop_reconciliation_worker() -> None:
 
 
 async def close_task_runner() -> None:
-    global _TASK_RUNNER, _PROCUREMENT_GRAPH, _PROCUREMENT_DEPS, _RECONCILER, _DATABASE
+    global _TASK_RUNNER, _PROCUREMENT_GRAPH, _PROCUREMENT_DEPS, _RECONCILER, _DATABASE, _EVENT_SERVICE
     _TASK_RUNNER = None
     _PROCUREMENT_GRAPH = None
     _PROCUREMENT_DEPS = None
     _RECONCILER = None
+    _EVENT_SERVICE = None
     if _DATABASE is not None:
         await _DATABASE.close()
         _DATABASE = None
