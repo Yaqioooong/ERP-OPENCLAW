@@ -50,6 +50,7 @@ class ProcurementState(TypedDict, total=False):
     order_id: str | None
     execution_status: str  # ExecutionStatus
     execution_attempts: int
+    requires_manual_review: bool
     last_error: dict[str, Any] | None
 
     # ---- 诊断 ----
@@ -110,6 +111,7 @@ def initial_state(
         "order_id": None,
         "execution_status": ExecutionStatus.NOT_STARTED.value,
         "execution_attempts": 0,
+        "requires_manual_review": False,
         "last_error": None,
         "retry_from": None,
         "failure_stage": None,

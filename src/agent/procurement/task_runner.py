@@ -136,6 +136,9 @@ class ProcurementTaskRunner:
         await self._graph.ainvoke(input_value, config, context=context)
         return await self._snapshot(task_id, config, context)
 
+    async def get_record(self, task_id: str):
+        return await self._tasks.get(task_id)
+
     async def get(self, *, task_id: str, user_id: str) -> TaskRunResult:
         record = await self._tasks.get(task_id)
         if record is None or record.user_id != user_id:
@@ -207,6 +210,9 @@ class ProcurementTaskRunner:
                 "approval_status": values.get("approval_status"),
                 "execution_status": values.get("execution_status"),
                 "order_id": values.get("order_id"),
+                "requires_manual_review": values.get(
+                    "requires_manual_review", False
+                ),
                 "last_error": values.get("last_error"),
             },
             recoverable=bool(snapshot.next),

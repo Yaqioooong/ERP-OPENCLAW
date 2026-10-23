@@ -611,10 +611,15 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
 
         try:
-            result: OrderVerificationResult = await deps.order_executor.verify_order(
-                task_id=state["task_id"],
-                order_id=state.get("order_id"),
-            )
+            if deps.order_reconciler is not None:
+                result: OrderVerificationResult = (
+                    await deps.order_reconciler.verify_by_task(state["task_id"])
+                )
+            else:
+                result = await deps.order_executor.verify_order(
+                    task_id=state["task_id"],
+                    order_id=state.get("order_id"),
+                )
         except Exception as exc:
             result = OrderVerificationResult(
                 status=ExecutionStatus.UNKNOWN,
@@ -634,6 +639,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 "last_error": None,
                 "failure_stage": None,
                 "retry_from": None,
+                "requires_manual_review": False,
                 "node_history": ["verify_order"],
                 "updated_at": deps.now().isoformat(),
             }
@@ -648,6 +654,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     "retryable": False,
                     "message": "订单核验确认失败。",
                 },
+                "requires_manual_review": result.requires_manual_review,
                 "node_history": ["verify_order"],
                 "updated_at": deps.now().isoformat(),
             }
@@ -667,6 +674,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     "message": "订单结果仍不确定，请继续核验。",
                 }
             ),
+            "requires_manual_review": result.requires_manual_review,
             "node_history": ["verify_order"],
             "updated_at": deps.now().isoformat(),
         }

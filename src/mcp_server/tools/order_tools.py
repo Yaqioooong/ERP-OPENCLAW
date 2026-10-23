@@ -112,6 +112,13 @@ def register_order_tools(mcp: FastMCP):
                 }
 
             return result.get("data", {})
+        except httpx.TimeoutException as e:
+            return {"error": {
+                "code": "ERP_TIMEOUT",
+                "duplicate": False,
+                "retryable": True,
+                "message": str(e),
+            }}
         except httpx.HTTPStatusError as e:
             return _error_from_response(e.response)
         except Exception as e:
@@ -195,7 +202,18 @@ def register_order_tools(mcp: FastMCP):
             if result.get("code") != 200:
                 return _error_from_response(response)
             return result.get("data", {})
+        except httpx.TimeoutException as e:
+            return {
+                "error": {
+                    "code": "ERP_TIMEOUT",
+                    "duplicate": False,
+                    "retryable": True,
+                    "message": str(e),
+                }
+            }
         except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return {"data": None}
             return _error_from_response(e.response)
         except Exception as e:
             return {
@@ -219,6 +237,8 @@ def register_order_tools(mcp: FastMCP):
                 return _error_from_response(response)
             return result.get("data", {})
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return {"data": None}
             return _error_from_response(exc.response)
         except Exception as exc:
             return {

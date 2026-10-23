@@ -70,7 +70,7 @@ class McpErpOrderGateway:
                     for item in plan.items
                 ],
                 "totalAmount": float(plan.total_amount),
-                "exceptedDeliverDate": (
+                "expectedDeliveryDate": (
                     plan.expected_delivery_date.isoformat()
                     if plan.expected_delivery_date
                     else None

@@ -33,8 +33,13 @@ async def lifespan(app: FastAPI):
         await agent_loader.initialize()
 
         # 初始化采购任务 runtime（Checkpointer 已在 agent_loader 中初始化）
-        from agent.procurement.dependencies import get_task_runner
+        from agent.procurement.dependencies import (
+            get_reconciliation_worker,
+            get_task_runner,
+        )
         await get_task_runner()
+        worker = await get_reconciliation_worker()
+        worker.start()
 
         print("=" * 50)
         print("DeepAgent Chat API 启动成功!")
@@ -51,8 +56,12 @@ async def lifespan(app: FastAPI):
         print("=" * 50)
 
         from agent.backends.sandbox_setup import shutdown_sandboxes
-        from agent.procurement.dependencies import close_task_runner
+        from agent.procurement.dependencies import (
+            close_task_runner,
+            stop_reconciliation_worker,
+        )
 
+        await stop_reconciliation_worker()
         await close_task_runner()
         await shutdown_sandboxes()
         await agent_loader.close()

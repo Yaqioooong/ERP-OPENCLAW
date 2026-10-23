@@ -44,6 +44,7 @@ class ExecutionStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     UNKNOWN = "unknown"
+    NEEDS_REVIEW = "needs_review"
 
 
 class DecisionType(StrEnum):
@@ -56,6 +57,14 @@ class ApprovalDecisionResult(StrEnum):
     APPLIED = "applied"
     ALREADY_APPLIED = "already_applied"
     STALE = "stale"
+
+
+class VerificationOutcome(StrEnum):
+    SUCCEEDED = "succeeded"
+    NOT_CREATED = "not_created"
+    CANCELLED = "cancelled"
+    MISMATCH = "mismatch"
+    UNKNOWN = "unknown"
 
 
 # ============================================================
@@ -268,6 +277,7 @@ class OrderVerificationResult(BaseModel):
     order_id: str | None = None
     order_number: str | None = None
     error: ToolError | None = None
+    requires_manual_review: bool = False
 
 
 class TaskRecord(BaseModel):
@@ -306,16 +316,50 @@ class ExecutionRecord(BaseModel):
     approval_id: str
     status: ExecutionStatus
 
+    plan_snapshot: dict[str, Any] | None = None
     order_id: str | None = None
     order_number: str | None = None
 
     attempt_count: int = 0
+    verification_attempts: int = 0
+    requires_manual_review: bool = False
+    remote_status: int | None = None
+
     last_error_code: str | None = None
     last_error_message: str | None = None
-
     request_payload: dict[str, Any] | None = None
     response_payload: dict[str, Any] | None = None
+    verification_payload: dict[str, Any] | None = None
+
     lease_expires_at: datetime | None = None
+    reconcile_lease_expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     executed_at: datetime | None = None
+    last_verified_at: datetime | None = None
+
+
+class RemoteOrderItem(BaseModel):
+    part_id: int
+    quantity: int
+    unit_price: Decimal | None = None
+    subtotal: Decimal | None = None
+
+
+class RemoteOrder(BaseModel):
+    order_id: str
+    order_number: str
+    status: int | None = None
+    total_amount: Decimal | None = None
+    expected_delivery_date: date | None = None
+    supplier_id: int | None = None
+    items: list[RemoteOrderItem] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class VerificationResult(BaseModel):
+    outcome: VerificationOutcome
+    order: RemoteOrder | None = None
+    issues: list[ValidationIssue] = Field(default_factory=list)
+    message: str = ""
+    attempts: int = 0

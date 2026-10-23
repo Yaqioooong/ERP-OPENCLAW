@@ -1,11 +1,11 @@
-import sqlite3
+import asyncpg
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from agent.procurement.models import TaskRecord
-from agent.procurement.task_repository import SqliteTaskRepository
+from agent.procurement.task_repository import PostgresTaskRepository
 
 TZ = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 10, 22, 10, 0, tzinfo=TZ)
@@ -24,8 +24,8 @@ def make_record(task_id: str = "TASK-1", user_id: str = "u1") -> TaskRecord:
 
 
 @pytest.mark.anyio
-async def test_create_and_get_task(tmp_path):
-    repo = SqliteTaskRepository(tmp_path / "procurement.db")
+async def test_create_and_get_task(db):
+    repo = PostgresTaskRepository(db)
     await repo.setup()
     record = make_record()
     await repo.create(record)
@@ -41,19 +41,19 @@ async def test_create_and_get_task(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_duplicate_task_id_is_rejected(tmp_path):
-    repo = SqliteTaskRepository(tmp_path / "procurement.db")
+async def test_duplicate_task_id_is_rejected(db):
+    repo = PostgresTaskRepository(db)
     await repo.setup()
     record = make_record()
     await repo.create(record)
 
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(asyncpg.UniqueViolationError):
         await repo.create(record)
 
 
 @pytest.mark.anyio
-async def test_update_status_and_terminal_timestamp(tmp_path):
-    repo = SqliteTaskRepository(tmp_path / "procurement.db")
+async def test_update_status_and_terminal_timestamp(db):
+    repo = PostgresTaskRepository(db)
     await repo.setup()
     await repo.create(make_record())
 
@@ -81,8 +81,8 @@ async def test_update_status_and_terminal_timestamp(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_mark_resumed_and_list(tmp_path):
-    repo = SqliteTaskRepository(tmp_path / "procurement.db")
+async def test_mark_resumed_and_list(db):
+    repo = PostgresTaskRepository(db)
     await repo.setup()
     await repo.create(make_record("TASK-1", "u1"))
     await repo.create(make_record("TASK-2", "u2"))

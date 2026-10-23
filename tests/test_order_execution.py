@@ -4,12 +4,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agent.procurement.approval_repository import SqliteApprovalRepository
+from agent.procurement.approval_repository import PostgresApprovalRepository
 from agent.procurement.erp_order_gateway import (
     GatewayOrder,
     GatewayTimeout,
 )
-from agent.procurement.execution_repository import SqliteExecutionRepository
+from agent.procurement.execution_repository import PostgresExecutionRepository
 from agent.procurement.models import (
     ApprovalRecord,
     ApprovalStatus,
@@ -52,9 +52,9 @@ class FakeGateway:
         return self.by_id.get(str(order_id))
 
 
-async def make_service(tmp_path, gateway):
-    approvals = SqliteApprovalRepository(tmp_path / "approval.db")
-    executions = SqliteExecutionRepository(tmp_path / "exec.db")
+async def make_service(db, gateway):
+    approvals = PostgresApprovalRepository(db)
+    executions = PostgresExecutionRepository(db)
     await executions.setup()
 
     plan = make_plan()
@@ -90,9 +90,9 @@ async def make_service(tmp_path, gateway):
 
 
 @pytest.mark.anyio
-async def test_same_key_creates_once(tmp_path):
+async def test_same_key_creates_once(db):
     gateway = FakeGateway()
-    service, plan, _, _ = await make_service(tmp_path, gateway)
+    service, plan, _, _ = await make_service(db, gateway)
     key = make_idempotency_key("TASK-1", plan.version, compute_plan_hash(plan))
 
     first = await service.create_order(
@@ -124,9 +124,9 @@ class SlowGateway(FakeGateway):
 
 
 @pytest.mark.anyio
-async def test_concurrent_same_key_creates_once(tmp_path):
+async def test_concurrent_same_key_creates_once(db):
     gateway = SlowGateway()
-    service, plan, _, _ = await make_service(tmp_path, gateway)
+    service, plan, _, _ = await make_service(db, gateway)
     key = make_idempotency_key("TASK-1", plan.version, compute_plan_hash(plan))
 
     first, second = await asyncio.gather(
@@ -153,9 +153,9 @@ async def test_concurrent_same_key_creates_once(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_timeout_then_verify_finds_order(tmp_path):
+async def test_timeout_then_verify_finds_order(db):
     gateway = FakeGateway(timeout=True)
-    service, plan, _, _ = await make_service(tmp_path, gateway)
+    service, plan, _, _ = await make_service(db, gateway)
     key = make_idempotency_key("TASK-1", plan.version, compute_plan_hash(plan))
 
     created = await service.create_order(

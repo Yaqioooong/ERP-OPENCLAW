@@ -12,7 +12,7 @@ from agent.procurement.models import (
     TaskRecord,
     ToolError,
 )
-from agent.procurement.task_repository import SqliteTaskRepository
+from agent.procurement.task_repository import PostgresTaskRepository
 from agent.procurement.task_runner import (
     ProcurementTaskRunner,
     TaskCheckpointMissing,
@@ -77,8 +77,8 @@ class UnknownThenSuccessExecutor:
         )
 
 
-async def make_runner(deps, db_path, saver):
-    repository = SqliteTaskRepository(db_path)
+async def make_runner(deps, database, saver):
+    repository = PostgresTaskRepository(database)
     await repository.setup()
     graph = compile_procurement_graph(deps, saver)
     return (
@@ -92,13 +92,12 @@ async def make_runner(deps, db_path, saver):
 
 
 @pytest.mark.anyio
-async def test_approval_interrupt_survives_restart(tmp_path):
+async def test_approval_interrupt_survives_restart(db):
     fake = FakeOrderExecutor(success=True)
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path)
+    deps = make_test_deps(fake, database=db)
     saver = MemorySaver()
 
-    runner1, _ = await make_runner(deps, db_path, saver)
+    runner1, _ = await make_runner(deps, db, saver)
     started = await runner1.start(
         raw_request="为华东仓补充 200 个活塞环组件",
         user_id="u1",
@@ -109,7 +108,7 @@ async def test_approval_interrupt_survives_restart(tmp_path):
     assert fake.create_calls == []
 
     # 模拟服务重启：新 graph + 新 runner，同一个 Checkpointer
-    runner2, _ = await make_runner(deps, db_path, saver)
+    runner2, _ = await make_runner(deps, db, saver)
     resumed = await runner2.resume(
         task_id=started.task_id,
         user_id="u1",
@@ -122,19 +121,18 @@ async def test_approval_interrupt_survives_restart(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_tool_timeout_enters_retry_gate_and_only_reruns_analyze(tmp_path):
+async def test_tool_timeout_enters_retry_gate_and_only_reruns_analyze(db):
     fake = FakeOrderExecutor(success=True)
     parser = CountingParser()
     provider = FlakyDataProvider()
-    db_path = tmp_path / "procurement.db"
     deps = make_test_deps(
         fake,
-        db_path=db_path,
+        database=db,
         parser=parser,
         data_provider=provider,
     )
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -159,13 +157,12 @@ async def test_tool_timeout_enters_retry_gate_and_only_reruns_analyze(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_retry_cancel_stops_task(tmp_path):
+async def test_retry_cancel_stops_task(db):
     fake = FakeOrderExecutor(success=True)
     provider = FlakyDataProvider()
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path, data_provider=provider)
+    deps = make_test_deps(fake, database=db, data_provider=provider)
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -186,12 +183,11 @@ async def test_retry_cancel_stops_task(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_unknown_order_result_is_verified_not_recreated(tmp_path):
+async def test_unknown_order_result_is_verified_not_recreated(db):
     executor = UnknownThenSuccessExecutor()
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(executor, db_path=db_path)
+    deps = make_test_deps(executor, database=db)
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -213,12 +209,11 @@ async def test_unknown_order_result_is_verified_not_recreated(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_resume_with_different_user_is_forbidden(tmp_path):
+async def test_resume_with_different_user_is_forbidden(db):
     fake = FakeOrderExecutor(success=True)
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path)
+    deps = make_test_deps(fake, database=db)
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -237,12 +232,11 @@ async def test_resume_with_different_user_is_forbidden(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_missing_checkpoint_marks_task_orphaned(tmp_path):
+async def test_missing_checkpoint_marks_task_orphaned(db):
     fake = FakeOrderExecutor(success=True)
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path)
+    deps = make_test_deps(fake, database=db)
     saver = MemorySaver()
-    runner, repository = await make_runner(deps, db_path, saver)
+    runner, repository = await make_runner(deps, db, saver)
 
     await repository.create(
         TaskRecord(
@@ -268,12 +262,11 @@ async def test_missing_checkpoint_marks_task_orphaned(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_terminal_resume_is_idempotent(tmp_path):
+async def test_terminal_resume_is_idempotent(db):
     fake = FakeOrderExecutor(success=True)
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path)
+    deps = make_test_deps(fake, database=db)
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -329,12 +322,11 @@ class AlwaysUnknownExecutor:
 
 
 @pytest.mark.anyio
-async def test_persistent_unknown_enters_retry_without_recreating(tmp_path):
+async def test_persistent_unknown_enters_retry_without_recreating(db):
     executor = AlwaysUnknownExecutor()
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(executor, db_path=db_path)
+    deps = make_test_deps(executor, database=db)
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -356,12 +348,11 @@ async def test_persistent_unknown_enters_retry_without_recreating(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_reconcile_marks_missing_checkpoint_orphaned(tmp_path):
+async def test_reconcile_marks_missing_checkpoint_orphaned(db):
     fake = FakeOrderExecutor(success=True)
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path)
+    deps = make_test_deps(fake, database=db)
     saver = MemorySaver()
-    runner, repository = await make_runner(deps, db_path, saver)
+    runner, repository = await make_runner(deps, db, saver)
 
     await repository.create(
         TaskRecord(
@@ -381,12 +372,11 @@ async def test_reconcile_marks_missing_checkpoint_orphaned(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_reconcile_keeps_awaiting_approval(tmp_path):
+async def test_reconcile_keeps_awaiting_approval(db):
     fake = FakeOrderExecutor(success=True)
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(fake, db_path=db_path)
+    deps = make_test_deps(fake, database=db)
     saver = MemorySaver()
-    runner1, repository = await make_runner(deps, db_path, saver)
+    runner1, repository = await make_runner(deps, db, saver)
 
     started = await runner1.start(
         raw_request="为华东仓补充 200 个活塞环组件",
@@ -395,7 +385,7 @@ async def test_reconcile_keeps_awaiting_approval(tmp_path):
     )
     assert started.status == "awaiting_approval"
 
-    runner2, _ = await make_runner(deps, db_path, saver)
+    runner2, _ = await make_runner(deps, db, saver)
     checked = await runner2.reconcile()
     assert checked == 1
     record = await repository.get(started.task_id)
@@ -422,12 +412,11 @@ class TimeoutThenSuccessExecutor:
 
 
 @pytest.mark.anyio
-async def test_create_timeout_is_verified_not_retried(tmp_path):
+async def test_create_timeout_is_verified_not_retried(db):
     executor = TimeoutThenSuccessExecutor()
-    db_path = tmp_path / "procurement.db"
-    deps = make_test_deps(executor, db_path=db_path)
+    deps = make_test_deps(executor, database=db)
     saver = MemorySaver()
-    runner, _ = await make_runner(deps, db_path, saver)
+    runner, _ = await make_runner(deps, db, saver)
 
     started = await runner.start(
         raw_request="为华东仓补充 200 个活塞环组件",

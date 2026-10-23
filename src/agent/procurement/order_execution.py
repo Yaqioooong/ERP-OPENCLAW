@@ -86,6 +86,7 @@ class SafeOrderExecutionService:
             plan_hash=plan_hash,
             approval_id=approval_id,
             status=ExecutionStatus.PENDING,
+            plan_snapshot=plan.model_dump(mode="json"),
             order_number=order_number,
             request_payload={
                 "task_id": task_id,
@@ -114,7 +115,10 @@ class SafeOrderExecutionService:
             if current.status == ExecutionStatus.SUCCEEDED:
                 return self._succeeded_from_record(current)
             if current.status == ExecutionStatus.UNKNOWN:
-                return await self._reconcile(current)
+                return self._unknown(
+                    "ORDER_RESULT_UNKNOWN",
+                    "之前订单结果不确定，请走 verify/reconcile 核验，不要重复创建。",
+                )
             return self._unknown(
                 "EXECUTION_IN_PROGRESS",
                 "另一个请求正在执行订单，先查询结果，不要重复创建。",
@@ -316,7 +320,12 @@ class SafeOrderExecutionService:
         if record.status == ExecutionStatus.SUCCEEDED:
             return self._succeeded_from_record(record)
         if record.status == ExecutionStatus.UNKNOWN:
-            return await self._reconcile(record)
+            # 已有 UNKNOWN 时不能直接凭“查到订单”判成功；
+            # 交给 deeper_4 的 OrderReconciler 做内容核验。
+            return self._unknown(
+                "ORDER_RESULT_UNKNOWN",
+                "之前订单结果不确定，请走 verify/reconcile 核验，不要重复创建。",
+            )
         if record.status == ExecutionStatus.FAILED:
             return self._failed_from_record(record)
         if record.status == ExecutionStatus.EXECUTING:
@@ -327,46 +336,6 @@ class SafeOrderExecutionService:
         return self._unknown(
             "EXECUTION_PENDING",
             "该订单已记录执行意图，等待执行。",
-        )
-
-    async def _reconcile(
-        self,
-        record: ExecutionRecord,
-    ) -> OrderExecutionResult:
-        try:
-            if record.order_id:
-                order = await self._gateway.get_order_by_id(record.order_id)
-            elif record.order_number:
-                order = await self._gateway.get_order_by_number(record.order_number)
-            else:
-                return self._unknown(
-                    "ORDER_LOOKUP_KEY_MISSING",
-                    "没有订单号，无法核验。",
-                )
-        except GatewayUnavailable as exc:
-            return self._unknown("ORDER_VERIFY_UNAVAILABLE", str(exc))
-
-        if order is None:
-            return self._unknown(
-                "ORDER_NOT_FOUND_YET",
-                "远端暂未查到订单，继续核验，不要重复创建。",
-            )
-
-        await self._executions.mark_succeeded(
-            idempotency_key=record.idempotency_key,
-            order_id=order.order_id,
-            order_number=order.order_number,
-            response=order.raw,
-            now=self._now(),
-        )
-        return self._succeeded_from_record(
-            record.model_copy(
-                update={
-                    "status": ExecutionStatus.SUCCEEDED,
-                    "order_id": order.order_id,
-                    "order_number": order.order_number,
-                }
-            )
         )
 
     async def _reconcile_after_duplicate(

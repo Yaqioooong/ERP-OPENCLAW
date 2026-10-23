@@ -5,7 +5,7 @@ from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from agent.procurement.approval_repository import SqliteApprovalRepository
+from agent.procurement.approval_repository import PostgresApprovalRepository
 from agent.procurement.dependencies import ProcurementDependencies
 from agent.procurement.models import (
     CandidateSet,
@@ -156,7 +156,7 @@ class FakeOrderExecutor:
 def make_test_deps(
         order_executor,
         *,
-        db_path: str | Path,
+        database,
         parser=None,
         data_provider=None,
         proposer=None,
@@ -167,7 +167,7 @@ def make_test_deps(
         data_provider=data_provider or StaticDataProvider(),
         plan_proposer=proposer or StaticPlanProposer(),
         plan_builder=DefaultPlanBuilder(),
-        approval_repository=SqliteApprovalRepository(db_path),
+        approval_repository=PostgresApprovalRepository(database),
         order_executor=order_executor,
         now=lambda: FIXED_NOW,
         execution_enabled=execution_enabled,

@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from agent.procurement.execution_repository import SqliteExecutionRepository
+from agent.procurement.execution_repository import PostgresExecutionRepository
 from agent.procurement.models import ExecutionRecord, ExecutionStatus
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -24,8 +24,8 @@ def make_record(key: str = "KEY-1") -> ExecutionRecord:
 
 
 @pytest.mark.anyio
-async def test_ensure_pending_is_idempotent(tmp_path):
-    repo = SqliteExecutionRepository(tmp_path / "exec.db")
+async def test_ensure_pending_is_idempotent(db):
+    repo = PostgresExecutionRepository(db)
     await repo.setup()
     first = await repo.ensure_pending(make_record())
     second = await repo.ensure_pending(make_record())
@@ -36,8 +36,8 @@ async def test_ensure_pending_is_idempotent(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_try_acquire_is_atomic_and_lease_expires(tmp_path):
-    repo = SqliteExecutionRepository(tmp_path / "exec.db")
+async def test_try_acquire_is_atomic_and_lease_expires(db):
+    repo = PostgresExecutionRepository(db)
     await repo.setup()
     await repo.ensure_pending(make_record())
 
@@ -59,8 +59,8 @@ async def test_try_acquire_is_atomic_and_lease_expires(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_mark_succeeded_failed_unknown(tmp_path):
-    repo = SqliteExecutionRepository(tmp_path / "exec.db")
+async def test_mark_succeeded_failed_unknown(db):
+    repo = PostgresExecutionRepository(db)
     await repo.setup()
     await repo.ensure_pending(make_record())
     await repo.try_acquire(

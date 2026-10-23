@@ -36,6 +36,7 @@ frontend/                   Vue 3 + Vite 聊天前端
 | --- | --- | --- |
 | Python | 3.10+ | 后端与 Agent 运行时 |
 | Node.js | 18+ | 前端开发服务器 |
+| PostgreSQL | `postgresql:///erp_openclaw` | 采购审批、任务、订单执行记录（本机默认 Unix socket） |
 | Redis | `redis://127.0.0.1:6379/0` | Checkpointer 与长期记忆存储 |
 | OpenSandbox | `http://127.0.0.1:8080` | 代码执行与文件操作沙箱 |
 | Java ERP 后端 | `http://localhost:8081/api` | 业务数据源 |
@@ -60,7 +61,36 @@ cd frontend
 npm install
 ```
 
-### 2. 配置环境变量
+### 2. 初始化 PostgreSQL
+
+采购业务表不再使用 SQLite。首次运行前创建数据库：
+
+```bash
+createdb erp_openclaw
+createdb erp_openclaw_test
+```
+
+默认 DSN 为 `postgresql:///erp_openclaw`，使用当前系统用户和本地 Unix socket；
+生产或远程数据库通过环境变量覆盖：
+
+```text
+PROCUREMENT_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/erp_openclaw
+PROCUREMENT_TEST_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/erp_openclaw_test
+```
+
+表由应用启动时自动创建，不需要手工执行 DDL。
+
+如果已有旧的 `data/procurement.db`，执行一次性迁移：
+
+```bash
+.venv/bin/python scripts/migrate_sqlite_to_postgres.py \
+  --sqlite-path data/procurement.db \
+  --database-url postgresql:///erp_openclaw
+```
+
+迁移完成后应用只读 PostgreSQL，SQLite 文件可以保留为备份。
+
+### 3. 配置环境变量
 
 在项目根目录创建 `.env`（`langgraph.json` 会自动加载）：
 
@@ -76,9 +106,11 @@ LANGSMITH_PROJECT=...
 可选变量：
 
 - `REDIS_URL`：默认 `redis://127.0.0.1:6379/0`。
+- `PROCUREMENT_DATABASE_URL`：默认 `postgresql:///erp_openclaw`。
+- `PROCUREMENT_TEST_DATABASE_URL`：测试库，默认 `postgresql:///erp_openclaw_test`。
 - `APP_ENV=production`：日志写入 `erp_agent.log`，否则输出到控制台。
 
-### 3. 启动服务
+### 4. 启动服务
 
 一键启动前后端：
 

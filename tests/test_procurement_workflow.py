@@ -27,11 +27,11 @@ def ctx():
 
 
 @pytest.mark.anyio
-async def test_approval_is_required_before_order(tmp_path, config, ctx):
+async def test_approval_is_required_before_order(db, config, ctx):
     fake = FakeOrderExecutor(success=True)
     deps = make_test_deps(
         fake,
-        db_path=tmp_path / "approval.db",
+        database=db,
         execution_enabled=True,
     )
     graph = compile_procurement_graph(deps, MemorySaver())
@@ -51,11 +51,11 @@ async def test_approval_is_required_before_order(tmp_path, config, ctx):
 
 
 @pytest.mark.anyio
-async def test_missing_warehouse_triggers_clarification(tmp_path, config, ctx):
+async def test_missing_warehouse_triggers_clarification(db, config, ctx):
     fake = FakeOrderExecutor(success=True)
     deps = make_test_deps(
         fake,
-        db_path=tmp_path / "approval.db",
+        database=db,
         parser=StaticRequestParser(make_incomplete_request()),
         execution_enabled=True,
     )
@@ -75,11 +75,11 @@ async def test_missing_warehouse_triggers_clarification(tmp_path, config, ctx):
 
 
 @pytest.mark.anyio
-async def test_reject_does_not_call_order_executor(tmp_path, config, ctx):
+async def test_reject_does_not_call_order_executor(db, config, ctx):
     fake = FakeOrderExecutor(success=True)
     deps = make_test_deps(
         fake,
-        db_path=tmp_path / "approval.db",
+        database=db,
         execution_enabled=True,
     )
     graph = compile_procurement_graph(deps, MemorySaver())
@@ -95,11 +95,11 @@ async def test_reject_does_not_call_order_executor(tmp_path, config, ctx):
 
 
 @pytest.mark.anyio
-async def test_plan_change_after_interrupt_does_not_execute(tmp_path, config, ctx):
+async def test_plan_change_after_interrupt_does_not_execute(db, config, ctx):
     fake = FakeOrderExecutor(success=True)
     deps = make_test_deps(
         fake,
-        db_path=tmp_path / "approval.db",
+        database=db,
         execution_enabled=True,
     )
     graph = compile_procurement_graph(deps, MemorySaver())
@@ -127,10 +127,10 @@ async def test_plan_change_after_interrupt_does_not_execute(tmp_path, config, ct
 
 
 @pytest.mark.anyio
-async def test_default_executor_stops_at_pending_execution(tmp_path, config, ctx):
+async def test_default_executor_stops_at_pending_execution(db, config, ctx):
     deps = make_test_deps(
         DisabledOrderExecutor(),
-        db_path=tmp_path / "approval.db",
+        database=db,
         execution_enabled=False,
     )
     graph = compile_procurement_graph(deps, MemorySaver())
@@ -146,11 +146,11 @@ async def test_default_executor_stops_at_pending_execution(tmp_path, config, ctx
 
 
 @pytest.mark.anyio
-async def test_resume_with_different_user_is_forbidden(tmp_path, config):
+async def test_resume_with_different_user_is_forbidden(db, config):
     fake = FakeOrderExecutor(success=True)
     deps = make_test_deps(
         fake,
-        db_path=tmp_path / "approval.db",
+        database=db,
         execution_enabled=True,
     )
     graph = compile_procurement_graph(deps, MemorySaver())

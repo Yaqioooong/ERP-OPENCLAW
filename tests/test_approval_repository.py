@@ -1,13 +1,13 @@
 import pytest
 
-from agent.procurement.approval_repository import SqliteApprovalRepository
+from agent.procurement.approval_repository import PostgresApprovalRepository
 from agent.procurement.models import ApprovalDecisionResult, ApprovalStatus
 from tests.factories import make_record
 
 
 @pytest.mark.anyio
-async def test_ensure_pending_is_idempotent(tmp_path):
-    repo = SqliteApprovalRepository(tmp_path / "approval.db")
+async def test_ensure_pending_is_idempotent(db):
+    repo = PostgresApprovalRepository(db)
     record = make_record()
     await repo.ensure_pending(record)
     await repo.ensure_pending(record)
@@ -15,8 +15,8 @@ async def test_ensure_pending_is_idempotent(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_decide_rejects_wrong_plan_hash(tmp_path):
-    repo = SqliteApprovalRepository(tmp_path / "approval.db")
+async def test_decide_rejects_wrong_plan_hash(db):
+    repo = PostgresApprovalRepository(db)
     record = make_record()
     await repo.ensure_pending(record)
     ok = await repo.decide(
@@ -33,8 +33,8 @@ async def test_decide_rejects_wrong_plan_hash(tmp_path):
 
 
 @pytest.mark.anyio
-async def test_decide_cannot_reuse_approved_record(tmp_path):
-    repo = SqliteApprovalRepository(tmp_path / "approval.db")
+async def test_decide_cannot_reuse_approved_record(db):
+    repo = PostgresApprovalRepository(db)
     record = make_record()
     await repo.ensure_pending(record)
 

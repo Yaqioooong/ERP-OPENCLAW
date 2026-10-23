@@ -6,9 +6,13 @@ from zoneinfo import ZoneInfo
 # src/agent/procurement/config.py -> parents[0]=procurement, [1]=agent, [2]=src, [3]=项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-# SQLite 业务事实库，（审批记录、后续执行记录）
-PROCUREMENT_DB_PATH = Path(
-    os.getenv("PROCUREMENT_DB_PATH", str(PROJECT_ROOT / "data" / "procurement.db"))
+# PostgreSQL 业务事实库（审批、任务、订单执行记录）
+# 本地默认使用 Unix socket + 当前系统用户；生产环境使用完整 DSN。
+PROCUREMENT_DATABASE_URL = os.getenv(
+    "PROCUREMENT_DATABASE_URL", "postgresql:///erp_openclaw"
+)
+PROCUREMENT_TEST_DATABASE_URL = os.getenv(
+    "PROCUREMENT_TEST_DATABASE_URL", "postgresql:///erp_openclaw_test"
 )
 
 # 单次采购数量上限：防止模型/用户输入异常大数
@@ -43,6 +47,29 @@ PROCUREMENT_EXECUTION_MAX_ATTEMPTS = int(
 # 确定性订单号前缀
 PROCUREMENT_ORDER_NUMBER_PREFIX = os.getenv(
     "PROCUREMENT_ORDER_NUMBER_PREFIX", "P0"
+)
+
+# 后台对账
+PROCUREMENT_RECONCILE_INTERVAL_SECONDS = int(
+    os.getenv("PROCUREMENT_RECONCILE_INTERVAL_SECONDS", "30")
+)
+PROCUREMENT_RECONCILE_BATCH_SIZE = int(
+    os.getenv("PROCUREMENT_RECONCILE_BATCH_SIZE", "50")
+)
+PROCUREMENT_RECONCILE_MAX_ATTEMPTS = int(
+    os.getenv("PROCUREMENT_RECONCILE_MAX_ATTEMPTS", "10")
+)
+PROCUREMENT_RECONCILE_LEASE_SECONDS = int(
+    os.getenv("PROCUREMENT_RECONCILE_LEASE_SECONDS", "60")
+)
+
+# “一次查不到”不能立刻判未创建：
+# 至少核验 N 次，且距离首次 UNKNOWN 至少 M 秒，才允许 NOT_CREATED。
+PROCUREMENT_RECONCILE_CONFIRM_ATTEMPTS = int(
+    os.getenv("PROCUREMENT_RECONCILE_CONFIRM_ATTEMPTS", "3")
+)
+PROCUREMENT_RECONCILE_CONFIRM_MIN_SECONDS = int(
+    os.getenv("PROCUREMENT_RECONCILE_CONFIRM_MIN_SECONDS", "120")
 )
 
 
