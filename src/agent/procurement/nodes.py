@@ -226,6 +226,62 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         except Exception as exc:
             # 非上游异常视为不可重试，避免把代码 bug 交给用户重试
             return _failed("ANALYSIS_FAILED", f"采购分析失败：{exc}")
+        analysis_result = None
+        if deps.analysis_pipeline is not None:
+            analysis_result = await deps.analysis_pipeline.run(
+                task_id=state["task_id"],
+                request=request,
+                candidates=candidates,
+                plan=plan,
+                now=deps.now(),
+            )
+            if analysis_result.status.value == "failed":
+                retryable = bool(
+                    analysis_result.error
+                    and analysis_result.error.retryable
+                )
+                return {
+                    "procurement_plan": plan.model_dump(mode="json"),
+                    "plan_version": version,
+                    "plan_hash": None,
+                    "analysis_result": (
+                        analysis_result.analysis.model_dump(mode="json")
+                        if analysis_result.analysis else None
+                    ),
+                    "analysis_validation": (
+                        analysis_result.validation.model_dump(mode="json")
+                        if analysis_result.validation else None
+                    ),
+                    "analysis_report": analysis_result.report_markdown,
+                    "analysis_sandbox": (
+                        analysis_result.sandbox_verification.model_dump(mode="json")
+                        if analysis_result.sandbox_verification else None
+                    ),
+                    "analysis_sources": (
+                        [s.model_dump(mode="json")
+                         for s in analysis_result.analysis.sources]
+                        if analysis_result.analysis else []
+                    ),
+                    "status": (
+                        TaskStatus.AWAITING_RETRY.value
+                        if retryable else TaskStatus.FAILED.value
+                    ),
+                    "failure_stage": "analyze_procurement",
+                    "retry_from": (
+                        "analyze_procurement" if retryable else None
+                    ),
+                    "last_error": (
+                        analysis_result.error.model_dump()
+                        if analysis_result.error else {
+                            "code": "ANALYSIS_FAILED",
+                            "retryable": retryable,
+                            "message": "分析失败。",
+                        }
+                    ),
+                    "node_history": ["analyze_procurement"],
+                    "updated_at": deps.now().isoformat(),
+                }
+
         return {
             "inventory_data": [i.model_dump(mode="json") for i in candidates.inventory],
             "supplier_candidates": [
@@ -237,6 +293,26 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "validation_errors": [],
             "validation_warnings": [],
             "validation_passed": False,
+            "analysis_result": (
+                analysis_result.analysis.model_dump(mode="json")
+                if analysis_result and analysis_result.analysis else None
+            ),
+            "analysis_validation": (
+                analysis_result.validation.model_dump(mode="json")
+                if analysis_result and analysis_result.validation else None
+            ),
+            "analysis_report": (
+                analysis_result.report_markdown if analysis_result else None
+            ),
+            "analysis_sandbox": (
+                analysis_result.sandbox_verification.model_dump(mode="json")
+                if analysis_result and analysis_result.sandbox_verification else None
+            ),
+            "analysis_sources": (
+                [s.model_dump(mode="json")
+                 for s in analysis_result.analysis.sources]
+                if analysis_result and analysis_result.analysis else []
+            ),
             "failure_stage": None,
             "retry_from": None,
             "status": TaskStatus.PLAN_READY.value,
@@ -263,6 +339,20 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             task_id=state["task_id"],
             today=deps.now().date(),
         )
+        analysis_validation = state.get("analysis_validation")
+        if analysis_validation and not analysis_validation.get("passed", False):
+            return {
+                "status": TaskStatus.FAILED.value,
+                "last_error": {
+                    "code": "ANALYSIS_VALIDATION_FAILED",
+                    "retryable": False,
+                    "message": "分析结果未通过校验，不能进入审批。",
+                    "analysis_errors": analysis_validation.get("errors", []),
+                },
+                "node_history": ["validate_plan"],
+                "updated_at": deps.now().isoformat(),
+            }
+
         if result.passed:
             return {
                 "validation_errors": [],
@@ -332,6 +422,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     created_at=now,
                     expires_at=expires_at,
                     plan_snapshot=plan.model_dump(mode="json"),
+                    analysis_report=state.get("analysis_report"),
+
                 )
             )
         except Exception as exc:
@@ -347,6 +439,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "status": TaskStatus.AWAITING_APPROVAL.value,
             "node_history": ["prepare_approval"],
             "updated_at": deps.now().isoformat(),
+            "analysis_report": state.get("analysis_report"),
+            "analysis_validation": state.get("analysis_validation"),
         }
 
     # --------------------------------------------------------
@@ -400,6 +494,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                         g.model_dump(mode="json") for g in plan.inventory_gaps
                     ],
                     "rationale": plan.rationale,
+                    "analysis_report": state.get("analysis_report"),
+                    "analysis_validation": state.get("analysis_validation"),
                 },
                 "action_requests": [
                     {
@@ -441,6 +537,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "status": TaskStatus.AWAITING_APPROVAL.value,
             "node_history": ["request_approval"],
             "updated_at": deps.now().isoformat(),
+            "analysis_report": state.get("analysis_report"),
+            "analysis_validation": state.get("analysis_validation"),
         }
 
     # --------------------------------------------------------

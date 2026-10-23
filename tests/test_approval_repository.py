@@ -76,3 +76,15 @@ async def test_rejected_approval_can_be_reprepared(db):
     assert reloaded.status == ApprovalStatus.PENDING
     assert reloaded.decision is None
     assert reloaded.approved_by is None
+
+
+@pytest.mark.anyio
+async def test_analysis_report_is_persisted(db):
+    repo = PostgresApprovalRepository(db)
+    record = make_record()
+    record.analysis_report = "# analysis"
+    await repo.ensure_pending(record)
+
+    loaded = await repo.get(record.approval_id)
+    assert loaded is not None
+    assert loaded.analysis_report == "# analysis"

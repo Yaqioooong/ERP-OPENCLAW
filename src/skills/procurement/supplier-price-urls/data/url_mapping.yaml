@@ -12,19 +12,19 @@
 #   3. 找到 URL → 爬虫技能获取最新报价 + 产品详情
 #   4. 未找到 URL → web_search 搜索市场价格
 
-mappings:
-  # === 火花塞 ===
-  - part_name: "【NGK原装】摩托车火花塞 Iridium IX CR9EIX 铱金火花塞"
-    supplier: "电气配件专营店"
-    url: "http://192.168.23.3/spark-plug.html"
-
-  - part_name: "【博世BOSCH原装】摩托车火花塞 FR7DC+ 铂金火花塞 高性能"
-    supplier: "博世配件旗舰店"
-    url: "http://192.168.23.3/spark-plug-bosch.html"
-
-  - part_name: "【电装DENSO原装】摩托车火花塞 U27ETR 铱金 省油型"
-    supplier: "电装配件专营店"
-    url: "http://192.168.23.3/spark-plug-denso.html"
+#mappings:
+#  # === 火花塞 ===
+#  - part_name: "【NGK原装】摩托车火花塞 Iridium IX CR9EIX 铱金火花塞"
+#    supplier: "电气配件专营店"
+#    url: "http://192.168.23.3/spark-plug.html"
+#
+#  - part_name: "【博世BOSCH原装】摩托车火花塞 FR7DC+ 铂金火花塞 高性能"
+#    supplier: "博世配件旗舰店"
+#    url: "http://192.168.23.3/spark-plug-bosch.html"
+#
+#  - part_name: "【电装DENSO原装】摩托车火花塞 U27ETR 铱金 省油型"
+#    supplier: "电装配件专营店"
+#    url: "http://192.168.23.3/spark-plug-denso.html"
 
   # === 以下待补充实际业务数据 ===
   # - part_name: ""

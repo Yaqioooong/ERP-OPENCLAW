@@ -1,27 +1,34 @@
+import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, Callable
 
+from agent.procurement.analysis_pipeline import TrustedAnalysisPipeline
+from agent.procurement.analysis_report import LlmReportNarrator
+from agent.procurement.analysis_sandbox import OpenSandboxVerifier
 from agent.procurement.approval_repository import PostgresApprovalRepository
 from agent.procurement.config import PROCUREMENT_MAX_PLAN_REVISIONS, PROCUREMENT_MAX_CLARIFICATION_ROUNDS, \
     PROCUREMENT_APPROVAL_TTL_MINUTES, PROCUREMENT_ACTIVE_SUPPLIER_STATUSES, PROCUREMENT_DATABASE_URL, \
     PROCUREMENT_EXECUTION_ENABLED, PROCUREMENT_REQUIRE_DISTINCT_APPROVER, utc_now_in_business_tz
-from agent.procurement.database import Database
 from agent.procurement.data_provider import McpProcurementDataProvider
+from agent.procurement.database import Database
 from agent.procurement.deterministic_plan_proposer import DeterministicPlanProposer
 from agent.procurement.erp_order_gateway import McpErpOrderGateway
 from agent.procurement.execution_repository import PostgresExecutionRepository
 from agent.procurement.models import ProcurementRequest, CandidateSet, PlanProposal
 from agent.procurement.order_execution import SafeOrderExecutionService
-from agent.procurement.order_reconciliation import OrderReconciler
-from agent.procurement.reconciliation_worker import ReconciliationWorker
 from agent.procurement.order_executor import DisabledOrderExecutor
+from agent.procurement.order_reconciliation import OrderReconciler
 from agent.procurement.parser import LLMRequestParser
 from agent.procurement.planner import DefaultPlanBuilder
 from agent.procurement.ports import RequestParser, ProcurementDataProvider, PlanProposer, ApprovalRepository, \
     OrderExecutionService
+from agent.procurement.reconciliation_worker import ReconciliationWorker
 from agent.procurement.task_repository import PostgresTaskRepository
 from agent.procurement.task_runner import ProcurementTaskRunner
+
+logger = logging.getLogger(__name__)
 
 _PROCUREMENT_GRAPH = None
 _PROCUREMENT_DEPS = None
@@ -61,6 +68,7 @@ class ProcurementDependencies:
     max_task_resumes: int = 3
     order_reconciler: OrderReconciler | None = None
     require_distinct_approver: bool = PROCUREMENT_REQUIRE_DISTINCT_APPROVER
+    analysis_pipeline: TrustedAnalysisPipeline | None = None
 
 
 async def get_database() -> Database:
@@ -101,6 +109,27 @@ async def build_production_dependencies() -> ProcurementDependencies:
         now=utc_now_in_business_tz,
     )
 
+    sandbox_verifier = None
+    try:
+        from agent.backends.global_sandbox_manager import (
+            get_global_sandbox_sync,
+        )
+
+        sandbox_backend = await asyncio.to_thread(get_global_sandbox_sync)
+        sandbox_verifier = OpenSandboxVerifier(
+            sandbox_backend,
+            timeout_seconds=30,
+        )
+    except Exception:
+        logger.warning(
+            "采购分析沙箱不可用，将跳过沙箱复算", exc_info=True
+        )
+
+    analysis_pipeline = TrustedAnalysisPipeline(
+        narrator=LlmReportNarrator(SUMMARY_MODEL),
+        sandbox_verifier=sandbox_verifier,
+    )
+
     return ProcurementDependencies(
         request_parser=LLMRequestParser(SUMMARY_MODEL),
         data_provider=McpProcurementDataProvider(
@@ -115,6 +144,7 @@ async def build_production_dependencies() -> ProcurementDependencies:
         execution_enabled=PROCUREMENT_EXECUTION_ENABLED,
         order_reconciler=reconciler,
         require_distinct_approver=PROCUREMENT_REQUIRE_DISTINCT_APPROVER,
+        analysis_pipeline=analysis_pipeline,
     )
 
 

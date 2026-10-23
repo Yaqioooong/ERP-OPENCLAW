@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS procurement_approval (
     decided_at    TIMESTAMPTZ,
     expires_at    TIMESTAMPTZ,
     plan_snapshot JSONB,
+    analysis_report TEXT,
     approved_by_roles TEXT[],
     UNIQUE (task_id, plan_version, plan_hash)
 );
@@ -46,6 +47,10 @@ class PostgresApprovalRepository:
                 "ALTER TABLE procurement_approval "
                 "ADD COLUMN IF NOT EXISTS approved_by_roles TEXT[]"
             )
+            await conn.execute(
+                "ALTER TABLE procurement_approval "
+                "ADD COLUMN IF NOT EXISTS analysis_report TEXT"
+            )
 
     async def ensure_pending(self, record: ApprovalRecord) -> None:
         await self.setup()
@@ -56,10 +61,10 @@ class PostgresApprovalRepository:
                     approval_id, task_id, plan_version, plan_hash, status,
                     requested_by, approved_by, decision, comment,
                     created_at, decided_at, expires_at, plan_snapshot,
-                    approved_by_roles
+                    analysis_report, approved_by_roles
                 ) VALUES (
                     $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, NULL, $8,
-                    $9::jsonb, NULL
+                    $9::jsonb, $10, NULL
                 )
                 ON CONFLICT (approval_id) DO UPDATE
                    SET status = 'pending',
@@ -67,6 +72,7 @@ class PostgresApprovalRepository:
                        created_at = EXCLUDED.created_at,
                        expires_at = EXCLUDED.expires_at,
                        plan_snapshot = EXCLUDED.plan_snapshot,
+                       analysis_report = EXCLUDED.analysis_report,
                        approved_by = NULL,
                        approved_by_roles = NULL,
                        decision = NULL,
@@ -88,6 +94,7 @@ class PostgresApprovalRepository:
                 record.created_at,
                 record.expires_at,
                 _json(record.plan_snapshot),
+                record.analysis_report,
             )
 
     async def decide(

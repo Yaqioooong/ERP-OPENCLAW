@@ -65,6 +65,11 @@ class ProcurementState(TypedDict, total=False):
     failure_stage: str | None  # 失败发生在哪个节点
     resume_count: int  # 恢复次数（防止无限恢复）
     last_checkpoint_id: str | None  # 可选：最近一次快照 ID（诊断）
+    analysis_result: dict[str, Any] | None
+    analysis_validation: dict[str, Any] | None
+    analysis_sandbox: dict[str, Any] | None
+    analysis_report: str | None
+    analysis_sources: list[dict[str, Any]]
 
 
 def initial_state(
@@ -123,4 +128,9 @@ def initial_state(
         "node_history": [],
         "created_at": now,
         "updated_at": now,
+        "analysis_result": None,
+        "analysis_validation": None,
+        "analysis_sandbox": None,
+        "analysis_report": None,
+        "analysis_sources": [],
     }

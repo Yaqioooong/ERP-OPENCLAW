@@ -38,9 +38,9 @@ async def list_inventory_page_core(params: InventorySearchInput, ctx: Context):
     data, error = await request_json(
         ctx=ctx,
         tool="inventory_page",
-        method="POST",
+        method="GET",
         path="/inventory/page",
-        json_body=params.model_dump(exclude_none=True),
+        params=params.model_dump(exclude_none=True),
     )
     if error:
         return error
