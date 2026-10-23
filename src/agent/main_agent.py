@@ -63,6 +63,7 @@ from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
 from agent.tools.mcp_client import load_mcp_tools
 from agent.tools.order_guard import build_guarded_order_tools
+from agent.tools.procurement_task_tools import build_procurement_task_tools
 from agent.tools.web_search import web_search
 
 def _user_namespace(rt):
@@ -188,6 +189,13 @@ async def create_main_agent(
             + [assign_skill]
             + [download_sandbox_file]
     )
+    # 审批/重试/取消统一由前端任务面板调用 HTTP API 完成；
+    # 主 Agent 不再持有 resume 工具，避免在对话里用文字代替按钮审批。
+    procurement_task_tools = [
+        tool
+        for tool in build_procurement_task_tools()
+        if tool.name != "resume_procurement_task"
+    ]
     logger.info(f"工具池：{len(available_tools)}个工具")
 
     # --- Phase 5: 子Agent yaml加载
@@ -234,7 +242,12 @@ async def create_main_agent(
         system_prompt=system_prompt,
         skills=["/skills/main"],
         memory=[AGENTS_MD_FILENAME],
-        tools=[web_search, assign_skill, download_sandbox_file],
+        tools=[
+            web_search,
+            assign_skill,
+            download_sandbox_file,
+            *procurement_task_tools,
+        ],
         subagents=subagents,
         middleware=main_middleware,
         backend=backend,

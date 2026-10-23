@@ -1,238 +1,377 @@
 <template>
   <div class="chat-area">
-    <!-- 消息列表 -->
-    <div class="message-list" ref="messageListRef">
-      <!-- 空状态 -->
-      <div v-if="displayMessages.length === 0" class="empty-state">
-        <h2>基于Harness Engineering的智能助手</h2>
-        <p>我是你的 AI 助手，可以帮助你完成各种任务</p>
-        <div class="feature-list">
-          <div class="feature-item">
-            <span class="feature-icon">📊</span>
-            <span>数据分析和图表生成</span>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">🔍</span>
-            <span>网络搜索和信息查询</span>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">💻</span>
-            <span>代码编写和调试</span>
-          </div>
-          <div class="feature-item">
-            <span class="feature-icon">📝</span>
-            <span>文档处理和写作</span>
-          </div>
+    <div
+      ref="scrollerRef"
+      class="scroller"
+      role="log"
+      aria-label="对话内容"
+      @scroll.passive="onScroll"
+    >
+      <p class="sr-only" aria-live="polite">
+        {{ streaming ? '正在生成回复' : pending ? '有一条待处理事项' : '' }}
+      </p>
+
+      <div v-if="loading" class="stream stream-skeleton" aria-hidden="true">
+        <div class="sk-user" />
+        <div class="sk-assistant">
+          <div class="sk-line" style="width: 92%" />
+          <div class="sk-line" style="width: 78%" />
+          <div class="sk-line" style="width: 56%" />
+        </div>
+        <div class="sk-user short" />
+        <div class="sk-assistant">
+          <div class="sk-line" style="width: 86%" />
+          <div class="sk-line" style="width: 64%" />
         </div>
       </div>
 
-      <!-- 消息列表（user / assistant / tool 按时间顺序混合展示）-->
-      <div v-else class="messages">
-        <MessageItem
-          v-for="(message, index) in displayMessages"
-          :key="message.id || index"
-          :message="message"
-          :is-streaming="isStreamingForMessage(message)"
-        />
+      <div v-else-if="isEmpty" class="empty-wrap">
+        <EmptyState @pick="$emit('suggest', $event)" />
+      </div>
+
+      <div v-else class="stream">
+        <template v-for="item in renderItems" :key="item.key">
+          <MessageItem
+            v-if="item.type === 'message'"
+            :message="item.message"
+            :is-streaming="isStreamingForMessage(item.message)"
+          />
+          <TaskCard
+            v-else-if="item.type === 'task'"
+            :task-id="item.taskId"
+            @open="$emit('open-task', $event)"
+          />
+          <ProcessTimeline v-else :items="item.items" />
+        </template>
+
+        <slot name="pending" />
+
+        <div class="stream-end" />
       </div>
     </div>
+
+    <Transition name="jump">
+      <button
+        v-if="!atBottom && !isEmpty"
+        class="jump-latest"
+        type="button"
+        @click="scrollToBottom(true)"
+      >
+        <ArrowDown :size="13" />
+        回到最新
+      </button>
+    </Transition>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue'
+import {
+  computed,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+} from 'vue'
+import { ArrowDown } from '@lucide/vue'
+import EmptyState from './EmptyState.vue'
 import MessageItem from './MessageItem.vue'
-
-/**
- * 对话区域组件
- *
- * 显示消息列表（user / assistant / tool 按时间顺序混合展示）
- * 当 showToolCalls 为 false 时，过滤掉 tool 消息只显示 AI 回复
- */
+import ProcessTimeline from './ProcessTimeline.vue'
+import TaskCard from './TaskCard.vue'
 
 const props = defineProps({
-  messages: {
-    type: Array,
-    default: () => []
-  },
-  streaming: {
-    type: Boolean,
-    default: false
-  },
-  showToolCalls: {
-    type: Boolean,
-    default: true
-  }
+  messages: { type: Array, default: () => [] },
+  streaming: { type: Boolean, default: false },
+  showProcess: { type: Boolean, default: true },
+  loading: { type: Boolean, default: false },
+  pending: { type: Boolean, default: false },
 })
 
-// 根据开关过滤展示的消息
-const displayMessages = computed(() => {
-  if (props.showToolCalls) {
-    return props.messages
+defineEmits(['suggest', 'open-task'])
+
+const scrollerRef = ref(null)
+const atBottom = ref(true)
+const stick = ref(true)
+let rafId = 0
+
+function extractTaskId(text) {
+  if (!text) return null
+  try {
+    const data = JSON.parse(text)
+    return data?.task_id || data?.taskId || null
+  } catch {
+    return null
   }
-  // 过滤掉 tool 消息，只保留 user 和 assistant
-  return props.messages.filter(m => m.role !== 'tool')
-})
-
-// 消息列表引用
-const messageListRef = ref(null)
-
-/**
- * 判断当前消息是否处于流式输出状态
- * 只有最后一条 assistant 消息在 streaming 时才显示光标
- */
-function isStreamingForMessage(msg) {
-  if (!props.streaming || msg.role !== 'assistant') return false
-  // 找到 messages 中最后一条 assistant 消息
-  const lastAssistant = [...props.messages].reverse().find(m => m.role === 'assistant')
-  return lastAssistant === msg
 }
 
-// 监听消息变化，自动滚动到底部
+const isEmpty = computed(
+  () => !props.loading && props.messages.length === 0 && !props.pending,
+)
+
+const renderItems = computed(() => {
+  const result = []
+  let buffer = []
+
+  const flush = () => {
+    if (!buffer.length) return
+    result.push({
+      type: 'process',
+      key: `process-${buffer[0].id || result.length}`,
+      items: [...buffer],
+    })
+    buffer = []
+  }
+
+  for (const message of props.messages) {
+    if (message.role === 'tool') {
+      const taskId = extractTaskId(message.text)
+      if (
+        message.tool_name === 'start_procurement_task' &&
+        (taskId || message.tool_status === 'calling')
+      ) {
+        flush()
+        result.push({
+          type: 'task',
+          key: `task-${message.id || result.length}`,
+          taskId,
+        })
+        continue
+      }
+      if (props.showProcess) buffer.push(message)
+      continue
+    }
+    flush()
+    if (message.role === 'user' || message.role === 'assistant') {
+      result.push({
+        type: 'message',
+        key: message.id || `${message.role}-${result.length}`,
+        message,
+      })
+    }
+  }
+  flush()
+  return result
+})
+
+const lastAssistant = computed(() => {
+  for (let index = props.messages.length - 1; index >= 0; index -= 1) {
+    if (props.messages[index].role === 'assistant') return props.messages[index]
+  }
+  return null
+})
+
+const lastSignature = computed(() => {
+  const last = props.messages[props.messages.length - 1]
+  if (!last) return ''
+  return [
+    last.id,
+    last.role,
+    last.content?.length || 0,
+    last.text?.length || 0,
+    last.args?.length || 0,
+    last.tool_status || '',
+    last.images?.length || 0,
+  ].join(':')
+})
+
+function isStreamingForMessage(message) {
+  return props.streaming && message === lastAssistant.value
+}
+
+function onScroll() {
+  const el = scrollerRef.value
+  if (!el) return
+  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  atBottom.value = distance < 24
+  stick.value = distance < 80
+}
+
+function scrollToBottom(smooth = false) {
+  const el = scrollerRef.value
+  if (!el) return
+  stick.value = true
+  atBottom.value = true
+  el.scrollTo({ top: el.scrollHeight, behavior: smooth ? 'smooth' : 'auto' })
+}
+
+function scheduleScroll() {
+  if (!stick.value) return
+  if (rafId) cancelAnimationFrame(rafId)
+  rafId = requestAnimationFrame(() => {
+    rafId = 0
+    if (!stick.value) return
+    const el = scrollerRef.value
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    atBottom.value = true
+  })
+}
+
 watch(
   () => props.messages.length,
-  () => {
-    nextTick(() => {
-      scrollToBottom()
-    })
-  }
-)
-
-// 深度监听消息内容变化（流式更新时也会触发滚动）
-watch(
-  () => props.messages,
-  () => {
-    nextTick(() => {
-      scrollToBottom()
-    })
+  async () => {
+    const last = props.messages[props.messages.length - 1]
+    if (last?.role === 'user') stick.value = true
+    await nextTick()
+    scheduleScroll()
   },
-  { deep: true }
 )
 
-/**
- * 滚动到底部
- */
-function scrollToBottom() {
-  if (messageListRef.value) {
-    messageListRef.value.scrollTop = messageListRef.value.scrollHeight
-  }
-}
+watch(lastSignature, async () => {
+  await nextTick()
+  scheduleScroll()
+})
+
+watch(
+  () => props.pending,
+  async (value) => {
+    if (!value) return
+    stick.value = true
+    await nextTick()
+    scheduleScroll()
+  },
+)
+
+onMounted(async () => {
+  await nextTick()
+  scrollToBottom(false)
+})
+
+onUnmounted(() => {
+  if (rafId) cancelAnimationFrame(rafId)
+})
+
+defineExpose({ scrollToBottom })
 </script>
 
 <style scoped>
 .chat-area {
-  flex: 1;
+  position: relative;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  background: #ffffff;
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
 }
 
-/* 消息列表 */
-.message-list {
+.scroller {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 24px 0;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
 }
 
-.message-list::-webkit-scrollbar {
-  width: 6px;
+.stream {
+  width: 100%;
+  max-width: var(--reading-w);
+  margin: 0 auto;
+  padding: 24px 24px 8px;
 }
 
-.message-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.message-list::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
-}
-
-.message-list::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-/* 空状态 */
-.empty-state {
-  height: 100%;
+.empty-wrap {
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 24px;
-  text-align: center;
-  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%);
-}
-
-.empty-icon {
-  margin-bottom: 24px;
-  animation: float 3s ease-in-out infinite;
-}
-
-.empty-icon img {
-  width: 240px;
-  height: 240px;
-}
-
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-8px); }
-}
-
-.empty-state h2 {
-  font-size: 28px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  margin-bottom: 12px;
-}
-
-.empty-state p {
-  font-size: 15px;
-  color: #64748b;
-  margin-bottom: 40px;
-}
-
-.feature-list {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 16px;
-  max-width: 540px;
-}
-
-.feature-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 18px 20px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-}
-
-.feature-item:hover {
-  transform: translateY(-2px);
-  border-color: #0ea5e9;
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.1);
-}
-
-.feature-icon {
-  font-size: 24px;
-}
-
-.feature-item span:last-child {
-  font-size: 14px;
-  color: #1e293b;
-  font-weight: 500;
-}
-
-/* 消息列表 */
-.messages {
-  max-width: 1200px;
+  min-height: 100%;
+  width: 100%;
+  max-width: 820px;
   margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.stream-end {
+  height: 18px;
+}
+
+/* 回到最新 */
+.jump-latest {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 4;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-full);
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  box-shadow: var(--shadow-sm);
+  transform: translateX(-50%);
+}
+
+.jump-latest:hover {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.jump-enter-active,
+.jump-leave-active {
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+.jump-enter-from,
+.jump-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 4px);
+}
+
+/* 骨架屏 */
+.stream-skeleton {
+  padding-top: 40px;
+}
+
+.sk-user {
+  width: 38%;
+  height: 42px;
+  margin-left: auto;
+  margin-bottom: 28px;
+  border-radius: 14px 14px 5px 14px;
+  background: var(--surface-2);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+.sk-user.short {
+  width: 28%;
+  height: 36px;
+}
+
+.sk-assistant {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-bottom: 34px;
+}
+
+.sk-line {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--surface-2);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 640px) {
+  .stream {
+    padding: 16px 16px 4px;
+  }
+
+  .empty-wrap {
+    padding: 20px 16px 32px;
+  }
 }
 </style>

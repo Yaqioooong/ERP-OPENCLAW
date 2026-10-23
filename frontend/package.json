@@ -1,7 +1,7 @@
 {
   "name": "deepagent-chat-frontend",
-  "version": "1.0.0",
-  "description": "DeepAgent 聊天前端 - 基于 Vue 3",
+  "version": "1.1.0",
+  "description": "ERP 采购智能助手前端 - 基于 Vue 3",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,10 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@lucide/vue": "^1.61.0",
+    "@vueuse/core": "^15.0.0",
     "axios": "^1.6.8",
     "highlight.js": "^11.11.1",
     "markdown-it": "^14.1.1",
-    "vue": "^3.4.21"
+    "reka-ui": "^2.11.0",
+    "vue": "^3.5.0"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",

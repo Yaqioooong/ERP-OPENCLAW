@@ -1,459 +1,391 @@
 <template>
-  <div class="interrupt-banner" :class="bannerClass">
-    <!-- ============================================================ -->
-    <!-- 类型 1：数据补充中断（request_order_info） -->
-    <!-- ============================================================ -->
-    <template v-if="interruptData.interrupt_type === 'order_info_supplement'">
-      <div class="interrupt-header">
-        <span class="interrupt-icon">📋</span>
-        <span class="interrupt-title">订单数据不完整，请补充以下信息</span>
+  <section
+    ref="cardRef"
+    class="hitl-card"
+    :class="`tone-${config.tone}`"
+    :aria-busy="submitting"
+    role="group"
+    :aria-labelledby="titleId"
+    tabindex="-1"
+  >
+    <div v-if="submitting" class="hitl-progress" aria-hidden="true">
+      <span />
+    </div>
+
+    <header class="hitl-head">
+      <div class="hitl-icon" aria-hidden="true">
+        <component :is="config.icon" :size="17" :stroke-width="1.9" />
       </div>
 
-      <div class="interrupt-body">
-        <div class="info-block missing-fields">
-          <div class="info-label">缺少字段</div>
-          <div class="info-value">{{ interruptData.missing_fields }}</div>
-        </div>
-        <div class="info-block collected-data" v-if="interruptData.collected_data">
-          <div class="info-label">已收集数据</div>
-          <pre class="info-pre">{{ formatCollectedData(interruptData.collected_data) }}</pre>
-        </div>
+      <div class="hitl-heading">
+        <span class="hitl-eyebrow">{{ config.eyebrow }}</span>
+        <h2 :id="titleId" class="hitl-title">{{ config.title }}</h2>
+        <p class="hitl-subtitle">{{ config.subtitle }}</p>
       </div>
 
-      <div class="interrupt-input-area">
-        <textarea
-          ref="supplementInputRef"
-          v-model="supplementText"
-          placeholder="请用自然语言描述要补充的信息，例如：物料ID=100、数量=50、单价25.5元、预计6月15日交货..."
-          class="supplement-textarea"
-          rows="3"
-          @keydown.enter.exact.prevent="handleSupplement"
-        ></textarea>
-        <button
-          class="submit-btn supplement-btn"
-          @click="handleSupplement"
-          :disabled="!supplementText.trim() || submitting"
-        >
-          {{ submitting ? '提交中...' : '提交补充信息' }}
-        </button>
-      </div>
-      <div class="interrupt-hint">按 Enter 提交，Shift + Enter 换行</div>
-    </template>
+      <span class="hitl-status">
+        <span class="hitl-status-dot" aria-hidden="true" />
+        {{ config.chip }}
+      </span>
+    </header>
 
-    <!-- ============================================================ -->
-    <!-- 类型 2：HITL 审批中断（order_create / order_update） -->
-    <!-- ============================================================ -->
-    <template v-else-if="interruptData.interrupt_type === 'hitl_approval'">
-      <div class="interrupt-header">
-        <span class="interrupt-icon">⚠️</span>
-        <span class="interrupt-title">需要人工确认以下操作</span>
-      </div>
+    <div class="hitl-body">
+      <SupplementPanel
+        v-if="config.panel === 'supplement'"
+        :data="interruptData"
+        :kind="config.supplementKind"
+        :submitting="submitting"
+        @resume="$emit('resume', $event)"
+      />
 
-      <div class="interrupt-body">
-        <div
-          v-for="(action, idx) in interruptData.action_requests"
-          :key="idx"
-          class="action-card"
-        >
-          <div class="action-header">
-            <span class="action-type">{{ formatActionName(action.name) }}</span>
-          </div>
-          <div class="action-details">
-            <table class="order-table" v-if="action.args">
-              <tbody>
-                <template v-for="(val, key) in displayArgs(action.args)" :key="key">
-                  <tr v-if="key !== 'orderDetail'">
-                    <td class="field-label">{{ formatFieldName(key) }}</td>
-                    <td class="field-value">{{ formatFieldValue(key, val) }}</td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-            <!-- 订单明细子表 -->
-            <div v-if="action.args && action.args.orderDetail && action.args.orderDetail.length" class="detail-table-wrap">
-              <div class="detail-label">订单明细 ({{ action.args.orderDetail.length }} 项)</div>
-              <table class="detail-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <th>物料ID</th>
-                    <th>数量</th>
-                    <th>单价</th>
-                    <th>小计</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(item, di) in action.args.orderDetail" :key="di">
-                    <td>{{ di + 1 }}</td>
-                    <td>{{ item.partId || '-' }}</td>
-                    <td>{{ item.quantity || '-' }}</td>
-                    <td>{{ item.unitPrice != null ? item.unitPrice : '-' }}</td>
-                    <td>{{ item.subtotal || '-' }}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+      <ApprovalPanel
+        v-else-if="config.panel === 'approval'"
+        :data="interruptData"
+        :kind="config.approvalKind"
+        :submitting="submitting"
+        @resume="$emit('resume', $event)"
+      />
+
+      <RetryPanel
+        v-else-if="config.panel === 'retry'"
+        :data="interruptData"
+        :submitting="submitting"
+        @resume="$emit('resume', $event)"
+      />
+
+      <div v-else class="unknown-panel">
+        <p class="hitl-note">
+          当前前端还不认识这种中断类型，原始数据如下。你可以复制后交给管理员处理。
+        </p>
+        <pre class="hitl-json">{{ rawValue }}</pre>
+        <div class="hitl-foot">
+          <span class="hitl-foot-note">
+            <CircleHelp :size="12" />
+            未执行任何操作
+          </span>
+          <div class="hitl-foot-actions">
+            <button type="button" class="btn btn-ghost" @click="copyRaw">
+              <Copy :size="13" />
+              复制原始数据
+            </button>
           </div>
         </div>
       </div>
 
-      <div class="interrupt-actions">
-        <button
-          class="submit-btn approve-btn"
-          @click="handleDecision('approve')"
-          :disabled="submitting"
-        >
-          {{ submitting ? '处理中...' : '✓ 同意' }}
-        </button>
-        <button
-          class="submit-btn reject-btn"
-          @click="handleDecision('reject')"
-          :disabled="submitting"
-        >
-          {{ submitting ? '处理中...' : '✗ 拒绝' }}
-        </button>
+      <div v-if="error" class="hitl-callout danger submit-error" role="alert">
+        <TriangleAlert :size="14" />
+        <div>
+          <strong>提交没有成功</strong>
+          <p>{{ error }}</p>
+          <p class="submit-error-hint">可以检查网络后重试，当前填写内容不会丢失。</p>
+        </div>
       </div>
-    </template>
-
-    <!-- ============================================================ -->
-    <!-- 未知中断类型（透传） -->
-    <!-- ============================================================ -->
-    <template v-else>
-      <div class="interrupt-header">
-        <span class="interrupt-icon">⏸️</span>
-        <span class="interrupt-title">Agent 已暂停，等待人工介入</span>
-      </div>
-      <div class="interrupt-body">
-        <pre class="info-pre">{{ JSON.stringify(interruptData, null, 2) }}</pre>
-      </div>
-    </template>
-  </div>
+    </div>
+  </section>
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
+import {
+  CircleHelp,
+  ClipboardCheck,
+  ClipboardList,
+  Copy,
+  FilePenLine,
+  RotateCcw,
+  ShieldCheck,
+  TriangleAlert,
+} from '@lucide/vue'
+import SupplementPanel from './hitl/SupplementPanel.vue'
+import ApprovalPanel from './hitl/ApprovalPanel.vue'
+import RetryPanel from './hitl/RetryPanel.vue'
+import { useToast } from '../composables/useToast'
+import { prettyJson } from '../utils/format'
 
 const props = defineProps({
   interruptData: { type: Object, required: true },
-  submitting: { type: Boolean, default: false }
+  submitting: { type: Boolean, default: false },
+  error: { type: String, default: '' },
 })
 
-const emit = defineEmits(['resume'])
+defineEmits(['resume'])
 
-const supplementText = ref('')
-const supplementInputRef = ref(null)
+const { toast } = useToast()
+const cardRef = ref(null)
+const titleId = `hitl-title-${Math.random().toString(36).slice(2, 9)}`
 
-// ============================================================
-// 数据补充 — 提交
-// ============================================================
-
-function handleSupplement() {
-  const text = supplementText.value.trim()
-  if (!text || props.submitting) return
-  emit('resume', { supplement: text })
-}
-
-// ============================================================
-// HITL 审批 — 提交决策
-// ============================================================
-
-function handleDecision(decisionType) {
-  if (props.submitting) return
-  emit('resume', { decisions: [{ type: decisionType }] })
-}
-
-// ============================================================
-// 格式化辅助函数
-// ============================================================
-
-function formatCollectedData(data) {
-  if (!data) return ''
-  try {
-    const parsed = typeof data === 'string' ? JSON.parse(data) : data
-    return JSON.stringify(parsed, null, 2)
-  } catch {
-    return String(data)
-  }
-}
-
-function formatActionName(name) {
-  const map = {
-    'order_create': '新建采购订单',
-    'order_update': '修改采购订单'
-  }
-  return map[name] || name
-}
-
-function displayArgs(args) {
-  // 过滤掉 orderDetail（单独展示），排除内部字段
-  const skip = ['orderDetail']
-  const result = {}
-  for (const [k, v] of Object.entries(args)) {
-    if (!skip.includes(k)) {
-      result[k] = v
+const config = computed(() => {
+  const type = props.interruptData.interrupt_type
+  if (type === 'order_info_supplement') {
+    return {
+      panel: 'supplement',
+      supplementKind: 'order',
+      tone: 'warn',
+      icon: FilePenLine,
+      eyebrow: 'DATA SUPPLEMENT',
+      title: '订单数据还差几项',
+      subtitle: '补齐后 Agent 会继续执行，不会猜测缺失字段。',
+      chip: '需补充',
     }
   }
-  return result
-}
-
-function formatFieldName(key) {
-  const map = {
-    'orderNumber': '订单编号',
-    'totalAmount': '总金额',
-    'status': '状态',
-    'expectedDeliveryDate': '预计交货',
-    'remark': '备注',
-    'supplierId': '供应商ID',
-    'supplierName': '供应商名称'
+  if (type === 'procurement_task_clarification') {
+    return {
+      panel: 'supplement',
+      supplementKind: 'clarification',
+      tone: 'warn',
+      icon: ClipboardList,
+      eyebrow: 'PROCUREMENT BRIEF',
+      title: '补充采购条件',
+      subtitle: '提交后会按新条件重新分析，再进入审批。',
+      chip: '需补充',
+    }
   }
-  return map[key] || key
-}
-
-function formatFieldValue(key, val) {
-  if (key === 'status') {
-    const map = { 1: '待审核', 2: '已审核', 3: '采购中', 4: '已入库', 5: '已取消' }
-    return map[val] != null ? map[val] : String(val)
+  if (type === 'hitl_approval') {
+    const action = props.interruptData.action_requests?.[0]?.name
+    return {
+      panel: 'approval',
+      approvalKind: 'order',
+      tone: 'accent',
+      icon: ShieldCheck,
+      eyebrow: 'HUMAN REVIEW',
+      title: action === 'order_update' ? '确认修改采购订单' : '确认创建采购订单',
+      subtitle: '字段已完整，确认后才会调用 ERP 接口。',
+      chip: '待确认',
+    }
   }
-  if (val === null || val === undefined) return '-'
-  return String(val)
+  if (type === 'procurement_task_approval') {
+    return {
+      panel: 'approval',
+      approvalKind: 'procurement',
+      tone: 'accent',
+      icon: ClipboardCheck,
+      eyebrow: 'PURCHASE APPROVAL',
+      title: '采购方案待你审批',
+      subtitle: '批准后创建订单并进入核验，数量可以调整。',
+      chip: '待审批',
+    }
+  }
+  if (type === 'procurement_task_retry') {
+    return {
+      panel: 'retry',
+      tone: 'danger',
+      icon: RotateCcw,
+      eyebrow: 'TASK RECOVERY',
+      title: '采购任务需要恢复',
+      subtitle: '上一次执行中断，可以重试或终止任务。',
+      chip: '待处理',
+    }
+  }
+  return {
+    panel: 'unknown',
+    tone: 'neutral',
+    icon: CircleHelp,
+    eyebrow: 'AGENT PAUSED',
+    title: 'Agent 已暂停',
+    subtitle: '收到一个当前前端未识别的中断类型。',
+    chip: '未知状态',
+  }
+})
+
+const rawValue = computed(() => {
+  const value =
+    props.interruptData.interrupt_value ??
+    props.interruptData.interrupt ??
+    props.interruptData
+  if (typeof value === 'string') return value
+  return prettyJson(value)
+})
+
+async function copyRaw() {
+  try {
+    await navigator.clipboard.writeText(rawValue.value)
+    toast('已复制原始数据', { tone: 'success' })
+  } catch {
+    toast('复制失败，请手动选择', { tone: 'danger' })
+  }
 }
 
-// CSS class
-const bannerClass = {
-  'banner-supplement': props.interruptData.interrupt_type === 'order_info_supplement',
-  'banner-approval': props.interruptData.interrupt_type === 'hitl_approval'
-}
+onMounted(async () => {
+  if (config.value.panel === 'supplement') return
+  await nextTick()
+  cardRef.value?.focus({ preventScroll: true })
+})
 </script>
 
 <style scoped>
-.interrupt-banner {
-  margin: 16px 24px;
-  border-radius: 16px;
+.hitl-card {
+  position: relative;
+  margin: 14px 0 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
   overflow: hidden;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08);
-  animation: slideUp 0.3s ease-out;
-}
-
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.banner-supplement {
-  border: 2px solid #f59e0b;
-  background: #fffbeb;
-}
-
-.banner-approval {
-  border: 2px solid #ef4444;
-  background: #fef2f2;
-}
-
-/* 头部 */
-.interrupt-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 16px 20px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
-}
-
-.interrupt-icon { font-size: 22px; }
-
-.interrupt-title {
-  font-size: 16px;
-  font-weight: 700;
-  color: #1e293b;
-}
-
-/* 内容区 */
-.interrupt-body {
-  padding: 16px 20px;
-}
-
-.info-block {
-  margin-bottom: 12px;
-}
-
-.info-block:last-child { margin-bottom: 0; }
-
-.info-label {
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: #64748b;
-  margin-bottom: 4px;
-}
-
-.missing-fields .info-value {
-  font-size: 15px;
-  color: #b45309;
-  font-weight: 600;
-  background: #fef3c7;
-  padding: 8px 14px;
-  border-radius: 8px;
-}
-
-.info-pre {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  padding: 10px 14px;
-  border-radius: 8px;
-  font-size: 13px;
-  font-family: 'Monaco', 'Menlo', 'JetBrains Mono', monospace;
-  overflow-x: auto;
-  white-space: pre-wrap;
-  margin: 0;
-  line-height: 1.6;
-}
-
-/* 输入区 */
-.interrupt-input-area {
-  padding: 0 20px 16px;
-  display: flex;
-  gap: 10px;
-  align-items: flex-end;
-}
-
-.supplement-textarea {
-  flex: 1;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  padding: 10px 14px;
-  font-size: 14px;
-  line-height: 1.6;
-  resize: none;
+  animation: fadeUp var(--dur-slow) var(--ease);
   outline: none;
-  font-family: inherit;
-  min-height: 60px;
-  transition: border-color 0.2s;
 }
 
-.supplement-textarea:focus {
-  border-color: #f59e0b;
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.1);
+.hitl-card.tone-warn {
+  --tone: var(--warn);
+  --tone-soft: var(--warn-soft);
+  box-shadow: inset 3px 0 0 var(--tone), var(--shadow-xs);
 }
 
-.interrupt-hint {
-  padding: 0 20px 12px;
-  font-size: 12px;
-  color: #94a3b8;
+.hitl-card.tone-accent {
+  --tone: var(--accent);
+  --tone-soft: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--tone), var(--shadow-xs);
 }
 
-/* 操作卡片 */
-.action-card {
-  background: #ffffff;
-  border: 1px solid #fecaca;
-  border-radius: 12px;
-  padding: 16px;
-  margin-bottom: 12px;
+.hitl-card.tone-danger {
+  --tone: var(--danger);
+  --tone-soft: var(--danger-soft);
+  box-shadow: inset 3px 0 0 var(--tone), var(--shadow-xs);
 }
 
-.action-card:last-child { margin-bottom: 0; }
-
-.action-header { margin-bottom: 12px; }
-
-.action-type {
-  font-size: 15px;
-  font-weight: 700;
-  color: #b91c1c;
-  background: #fef2f2;
-  padding: 4px 14px;
-  border-radius: 6px;
+.hitl-card.tone-neutral {
+  --tone: var(--ink-3);
+  --tone-soft: var(--surface-2);
 }
 
-/* 订单详情表 */
-.order-table {
-  width: 100%;
-  border-collapse: collapse;
+.hitl-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--surface-2);
+  overflow: hidden;
+  z-index: 2;
 }
 
-.order-table td {
-  padding: 6px 0;
-  font-size: 14px;
+.hitl-progress span {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 32%;
+  background: var(--tone);
+  animation: hitlProgress 1.2s var(--ease) infinite;
 }
 
-.field-label {
-  width: 100px;
-  color: #64748b;
-  font-weight: 600;
-}
-
-.field-value {
-  color: #1e293b;
-}
-
-.detail-table-wrap {
-  margin-top: 12px;
-}
-
-.detail-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #64748b;
-  margin-bottom: 6px;
-}
-
-.detail-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.detail-table th {
-  background: #fef2f2;
-  padding: 8px 10px;
-  text-align: left;
-  font-weight: 600;
-  color: #b91c1c;
-  border-bottom: 1px solid #fecaca;
-}
-
-.detail-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid #f1f5f9;
-}
-
-/* 按钮 */
-.submit-btn {
-  padding: 12px 24px;
-  border: none;
-  border-radius: 12px;
-  font-size: 14px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.submit-btn:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.supplement-btn {
-  flex-shrink: 0;
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(245, 158, 11, 0.3);
-}
-
-.approve-btn {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
-}
-
-.reject-btn {
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  color: #fff;
-  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
-}
-
-.interrupt-actions {
+.hitl-head {
   display: flex;
-  gap: 12px;
-  padding: 0 20px 16px;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 17px 20px 14px;
+}
+
+.hitl-icon {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: var(--tone-soft);
+  color: var(--tone);
+}
+
+.hitl-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.hitl-eyebrow {
+  display: block;
+  color: var(--ink-3);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.1em;
+}
+
+.hitl-title {
+  margin-top: 2px;
+  color: var(--ink);
+  font-size: 15.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.hitl-subtitle {
+  margin-top: 3px;
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.hitl-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  margin-top: 2px;
+  flex-shrink: 0;
+  border-radius: var(--r-full);
+  background: var(--tone-soft);
+  color: var(--tone);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.hitl-status-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.hitl-body {
+  padding: 0 20px 18px;
+}
+
+.unknown-panel .hitl-json {
+  margin-top: 10px;
+}
+
+.submit-error {
+  margin-top: 14px;
+}
+
+.submit-error p {
+  margin-top: 2px;
+  color: inherit;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.submit-error-hint {
+  opacity: 0.75;
+}
+
+@keyframes hitlProgress {
+  0% {
+    left: -32%;
+  }
+  100% {
+    left: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .hitl-head {
+    padding: 14px 14px 12px;
+  }
+
+  .hitl-body {
+    padding: 0 14px 14px;
+  }
+
+  .hitl-status {
+    display: none;
+  }
+
+  .hitl-subtitle {
+    font-size: 11.5px;
+  }
 }
 </style>

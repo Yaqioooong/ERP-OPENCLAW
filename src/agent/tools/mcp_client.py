@@ -58,10 +58,20 @@ async def load_mcp_tools(
     erp_tools = await mcp_client.get_tools(server_name="erp-api")
     print(f"[INFO] 已从 ERP MCP Server 加载 {len(erp_tools)} 个工具")
 
-    # 从魔塔社区 MCP Server 获取图表工具
-    analysis_tools = await mcp_client.get_tools(server_name="analysis")
-    print(f"[INFO] 已从魔塔社区 MCP Server 加载 {len(analysis_tools)} 个工具（可视化+其他）")
-    print(f"[INFO] 所有已从魔塔社区 MCP Server 加载 {analysis_tools} ")
+    # 从魔塔社区 MCP Server 获取图表工具。外部图表服务不可用不能阻断
+    # ERP 主流程；降级为无图表工具，采购任务仍可运行。
+    try:
+        analysis_tools = await mcp_client.get_tools(server_name="analysis")
+        print(
+            f"[INFO] 已从魔塔社区 MCP Server 加载 "
+            f"{len(analysis_tools)} 个工具（可视化+其他）"
+        )
+    except Exception as exc:
+        print(
+            f"[WARN] 魔塔社区图表 MCP 不可用，跳过图表工具："
+            f"{type(exc).__name__}: {exc}"
+        )
+        analysis_tools = []
 
     # 合并全部工具
     all_tools = list(erp_tools) + list(analysis_tools)

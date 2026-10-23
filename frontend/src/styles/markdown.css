@@ -1,0 +1,351 @@
+/**
+ * Markdown 内容排版
+ *
+ * 这些样式作用于 v-html 生成的 DOM，所以不能写在 scoped style 里。
+ * 所有颜色使用设计令牌，自动适配深浅色。
+ */
+
+.md-body {
+  font-size: 15.5px;
+  line-height: 1.78;
+  color: var(--ink);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.md-body > *:first-child {
+  margin-top: 0;
+}
+
+.md-body > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 标题 */
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  color: var(--ink);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.md-body h1 {
+  margin: 28px 0 12px;
+  font-size: 23px;
+}
+
+.md-body h2 {
+  margin: 24px 0 10px;
+  font-size: 19px;
+}
+
+.md-body h3 {
+  margin: 20px 0 8px;
+  font-size: 16.5px;
+}
+
+.md-body h4,
+.md-body h5,
+.md-body h6 {
+  margin: 16px 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* 段落与列表 */
+.md-body p {
+  margin: 10px 0;
+}
+
+.md-body ul,
+.md-body ol {
+  margin: 10px 0;
+  padding-left: 22px;
+}
+
+.md-body li {
+  margin: 5px 0;
+}
+
+.md-body li::marker {
+  color: var(--ink-3);
+}
+
+.md-body li > p {
+  margin: 4px 0;
+}
+
+.md-body strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.md-body em {
+  font-style: italic;
+}
+
+.md-body hr {
+  margin: 24px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+/* 链接 */
+.md-body a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  text-underline-offset: 2px;
+  transition: text-decoration-color var(--dur-fast) var(--ease);
+}
+
+.md-body a:hover {
+  text-decoration-color: var(--accent);
+}
+
+/* 行内代码 */
+.md-body :not(pre) > code {
+  padding: 1.5px 5px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  white-space: break-spaces;
+}
+
+/* 代码块 */
+.md-body pre {
+  position: relative;
+  margin: 14px 0;
+  padding: 34px 18px 16px;
+  border-radius: var(--r-md);
+  background: #1b201e;
+  color: #e8e6e1;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.68;
+  tab-size: 2;
+}
+
+html[data-theme="dark"] .md-body pre {
+  background: #0d0f0e;
+  border: 1px solid var(--line);
+}
+
+.md-body pre code {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: inherit;
+  white-space: pre;
+}
+
+.md-lang {
+  position: absolute;
+  top: 10px;
+  left: 16px;
+  color: rgba(232, 230, 225, 0.42);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.md-copy {
+  position: absolute;
+  top: 7px;
+  right: 8px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(232, 230, 225, 0.7);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.md-body pre:hover .md-copy,
+.md-copy:focus-visible {
+  opacity: 1;
+}
+
+.md-copy:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+/* 表格 */
+.md-table-wrap {
+  margin: 14px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow-x: auto;
+}
+
+.md-body table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+
+.md-body th,
+.md-body td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.md-body th {
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-weight: 600;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+}
+
+.md-body tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.md-body tbody tr:hover {
+  background: var(--accent-softer);
+}
+
+/* 引用 */
+.md-body blockquote {
+  margin: 14px 0;
+  padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--accent);
+  color: var(--ink-2);
+}
+
+.md-body blockquote p {
+  margin: 6px 0;
+}
+
+/* 图片 */
+.md-body img {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  width: auto;
+  height: auto;
+  margin: 16px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  object-fit: contain;
+  background: var(--surface);
+}
+
+.md-body a.image-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 7px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+/* 任务列表 */
+.md-body input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin-right: 6px;
+  accent-color: var(--accent);
+  vertical-align: -2px;
+}
+
+.md-body li:has(> input[type="checkbox"]) {
+  list-style: none;
+  margin-left: -18px;
+}
+
+@media (hover: none) {
+  .md-copy {
+    opacity: 1;
+  }
+}
+
+/* 折叠块 */
+.md-body details {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+}
+
+.md-body summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 13px;
+  font-weight: 550;
+}
+
+/* 代码高亮（token 化，深浅色统一） */
+.md-body .hljs {
+  background: transparent;
+  color: inherit;
+}
+
+.md-body .hljs-keyword,
+.md-body .hljs-selector-tag,
+.md-body .hljs-built_in,
+.md-body .hljs-name,
+.md-body .hljs-tag {
+  color: #7dd3c7;
+}
+
+.md-body .hljs-string,
+.md-body .hljs-title,
+.md-body .hljs-section,
+.md-body .hljs-attribute,
+.md-body .hljs-literal,
+.md-body .hljs-template-tag,
+.md-body .hljs-template-variable,
+.md-body .hljs-type,
+.md-body .hljs-addition {
+  color: #e8c07d;
+}
+
+.md-body .hljs-comment,
+.md-body .hljs-quote,
+.md-body .hljs-deletion,
+.md-body .hljs-meta {
+  color: #8b9a94;
+}
+
+.md-body .hljs-number,
+.md-body .hljs-regexp,
+.md-body .hljs-selector-attr,
+.md-body .hljs-selector-pseudo,
+.md-body .hljs-variable {
+  color: #a8b8c8;
+}
+
+.md-body .hljs-function {
+  color: #d9d2a8;
+}
+
+.md-body .hljs-class .hljs-title {
+  color: #8fd3b0;
+}

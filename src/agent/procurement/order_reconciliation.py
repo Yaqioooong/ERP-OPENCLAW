@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -36,6 +38,8 @@ from agent.procurement.models import (
     VerificationResult,
 )
 from agent.procurement.rules import issue, q2
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -297,6 +301,12 @@ class OrderReconciler:
             )
 
         now = self._now()
+        started = time.monotonic()
+        logger.info(
+            "procurement.reconcile.start task_id=%s key=%s status=%s order_number=%s",
+            record.task_id, record.idempotency_key, record.status.value,
+            record.order_number,
+        )
         acquired = await self._executions.try_acquire_reconcile(
             idempotency_key=record.idempotency_key,
             now=now,
@@ -396,6 +406,12 @@ class OrderReconciler:
                 "remote_status": remote.status,
             },
             now=self._now(),
+        )
+        logger.info(
+            "procurement.reconcile.result task_id=%s key=%s outcome=SUCCEEDED "
+            "order_id=%s duration_ms=%s",
+            record.task_id, record.idempotency_key, remote.order_id,
+            int((time.monotonic() - started) * 1000),
         )
         return VerificationResult(
             outcome=VerificationOutcome.SUCCEEDED,

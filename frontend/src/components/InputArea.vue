@@ -1,327 +1,328 @@
 <template>
-  <div class="input-area">
-    <div class="input-container">
-      <!-- 工具调用开关 -->
-      <div class="tool-toggle">
-        <label class="toggle-label">
-          <input
-            type="checkbox"
-            :checked="showToolCalls"
-            @change="emit('toggle-tool-calls', $event.target.checked)"
-            class="toggle-checkbox"
-          />
-          <span class="toggle-switch"></span>
-          <span class="toggle-text">显示工具调用</span>
-        </label>
-      </div>
+  <div class="composer-area">
+    <div
+      class="composer"
+      :class="{ focused: isFocused, streaming }"
+    >
+      <textarea
+        ref="textareaRef"
+        class="composer-input"
+        :value="modelValue"
+        rows="1"
+        placeholder="给采购助手发消息，或描述采购需求…"
+        aria-label="输入消息"
+        @input="onInput"
+        @focus="isFocused = true"
+        @blur="isFocused = false"
+        @keydown="onKeydown"
+      />
 
-      <!-- 输入框 -->
-      <div class="input-wrapper" :class="{ focused: isFocused, streaming: streaming }">
-        <textarea
-          ref="textareaRef"
-          v-model="inputText"
-          @focus="isFocused = true"
-          @blur="isFocused = false"
-          @keydown.enter.exact.prevent="handleSend"
-          @input="autoResize"
-          placeholder="输入消息，Enter 发送..."
-          rows="1"
-          :disabled="streaming"
-          class="input-textarea"
-        ></textarea>
-        <!-- 发送按钮：流式时变为停止按钮 -->
-        <button
-          v-if="!streaming"
-          class="send-btn"
-          @click="handleSend"
-          :disabled="!inputText.trim()"
-        >
-          <span>发送</span>
-        </button>
-        <button
-          v-else
-          class="stop-btn"
-          @click="handleStop"
-        >
-          <span class="stop-icon">■</span>
-          <span>停止</span>
-        </button>
-      </div>
+      <div class="composer-bar">
+        <div class="composer-left">
+          <button
+            class="composer-tool"
+            type="button"
+            :aria-pressed="showProcess"
+            title="显示或隐藏执行过程"
+            @click="$emit('toggle-process')"
+          >
+            <ListTree :size="14" />
+            <span>执行过程</span>
+            <span class="tool-state">{{ showProcess ? '开' : '关' }}</span>
+          </button>
+        </div>
 
-      <!-- 提示信息 -->
-      <div class="input-hint">
-        <span v-if="!streaming">按 Enter 发送，Shift + Enter 换行</span>
-        <span v-else class="streaming-hint">正在生成回复...</span>
+        <div class="composer-right">
+          <span class="composer-hint">
+            {{ streaming ? 'Esc 停止' : 'Enter 发送' }}
+          </span>
+
+          <button
+            v-if="!streaming"
+            class="send-btn"
+            type="button"
+            :disabled="!canSend"
+            aria-label="发送消息"
+            title="发送消息 (Enter)"
+            @click="handleSend"
+          >
+            <ArrowUp :size="16" :stroke-width="2.2" />
+          </button>
+
+          <button
+            v-else
+            class="stop-btn"
+            type="button"
+            aria-label="停止生成"
+            title="停止生成 (Esc)"
+            @click="$emit('stop')"
+          >
+            <Square :size="10" fill="currentColor" />
+          </button>
+        </div>
       </div>
     </div>
+
+    <p class="composer-footnote">
+      <template v-if="streaming">
+        正在生成，仍可继续输入 · <kbd class="kbd">Esc</kbd> 停止
+      </template>
+      <template v-else>
+        <kbd class="kbd">Enter</kbd> 发送 · <kbd class="kbd">Shift + Enter</kbd> 换行 ·
+        关键操作会先请你确认
+      </template>
+    </p>
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
-
-/**
- * 输入区域组件
- *
- * 提供消息输入功能：
- * - 正常状态：显示"发送"按钮
- * - 流式输出时：输入框禁用，按钮变为"停止"
- */
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { ArrowUp, ListTree, Square } from '@lucide/vue'
 
 const props = defineProps({
-  streaming: {
-    type: Boolean,
-    default: false
-  },
-  showToolCalls: {
-    type: Boolean,
-    default: true
-  }
+  modelValue: { type: String, default: '' },
+  streaming: { type: Boolean, default: false },
+  showProcess: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['send', 'stop', 'toggle-tool-calls'])
+const emit = defineEmits(['update:modelValue', 'send', 'stop', 'toggle-process'])
 
-// 输入文本
-const inputText = ref('')
-// 是否获取焦点
-const isFocused = ref(false)
-// textarea 引用
 const textareaRef = ref(null)
+const isFocused = ref(false)
 
-/**
- * 发送消息
- */
-function handleSend() {
-  const text = inputText.value.trim()
-  if (!text) return
+const canSend = computed(() => props.modelValue.trim().length > 0)
 
-  emit('send', text)
-  inputText.value = ''
-
-  nextTick(() => {
-    if (textareaRef.value) {
-      textareaRef.value.style.height = 'auto'
-    }
-  })
-}
-
-/**
- * 停止对话
- */
-function handleStop() {
-  emit('stop')
-}
-
-/**
- * 自动调整 textarea 高度
- */
 function autoResize() {
   const textarea = textareaRef.value
   if (!textarea) return
-
   textarea.style.height = 'auto'
-  textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px'
+  textarea.style.height = `${Math.min(textarea.scrollHeight, 168)}px`
 }
+
+function onInput(event) {
+  emit('update:modelValue', event.target.value)
+  autoResize()
+}
+
+function onKeydown(event) {
+  if (event.key !== 'Enter') return
+  if (event.isComposing) return
+  if (event.shiftKey) return
+  if (event.metaKey || event.ctrlKey) {
+    event.preventDefault()
+    handleSend()
+    return
+  }
+  event.preventDefault()
+  handleSend()
+}
+
+function handleSend() {
+  if (props.streaming) return
+  const text = props.modelValue.trim()
+  if (!text) return
+  emit('update:modelValue', '')
+  emit('send', text)
+  nextTick(() => {
+    autoResize()
+    textareaRef.value?.focus()
+  })
+}
+
+function focus() {
+  textareaRef.value?.focus()
+}
+
+defineExpose({ focus })
+
+watch(
+  () => props.modelValue,
+  () => nextTick(autoResize),
+)
+
+onMounted(() => {
+  autoResize()
+})
 </script>
 
 <style scoped>
-.input-area {
-  padding: 16px 24px 24px;
-  background: #ffffff;
-  border-top: 1px solid #e2e8f0;
-}
-
-.input-container {
-  max-width: 1100px;
-  margin: 0 auto;
-}
-
-/* 工具调用开关 */
-.tool-toggle {
-  margin-bottom: 12px;
-}
-
-.toggle-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.toggle-checkbox {
-  display: none;
-}
-
-.toggle-switch {
+.composer-area {
   position: relative;
-  width: 44px;
-  height: 24px;
-  background: #e2e8f0;
-  border-radius: 12px;
-  transition: all 0.2s ease;
+  flex-shrink: 0;
+  padding: 10px 24px 14px;
+  background: var(--surface);
 }
 
-.toggle-switch::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  background: #fff;
-  border-radius: 50%;
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+.composer {
+  max-width: var(--reading-w);
+  margin: 0 auto;
+  padding: 10px 10px 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
 }
 
-.toggle-checkbox:checked + .toggle-switch {
-  background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+.composer.focused {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+  box-shadow: 0 0 0 3px var(--accent-ring), var(--shadow-sm);
 }
 
-.toggle-checkbox:checked + .toggle-switch::after {
-  transform: translateX(20px);
-  background: #fff;
+.composer.streaming {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--line));
 }
 
-.toggle-text {
-  font-size: 13px;
-  color: #64748b;
-  font-weight: 500;
-}
-
-/* 输入框包装 */
-.input-wrapper {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  padding: 14px 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 16px;
-  transition: all 0.2s ease;
-}
-
-.input-wrapper.focused {
-  border-color: #0ea5e9;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
-}
-
-.input-wrapper.streaming {
-  background: #fef2f2;
-  border-color: #fecaca;
-}
-
-/* 输入框 */
-.input-textarea {
-  flex: 1;
-  border: none;
-  background: transparent;
-  font-size: 15px;
-  line-height: 1.6;
-  resize: none;
+.composer-input {
+  display: block;
+  width: 100%;
+  max-height: 168px;
+  padding: 2px 2px 4px;
+  border: 0;
   outline: none;
-  min-height: 24px;
-  max-height: 200px;
-  color: #1e293b;
-  font-weight: 500;
+  background: transparent;
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.65;
+  resize: none;
+  overflow-y: auto;
 }
 
-.input-textarea::placeholder {
-  color: #94a3b8;
+.composer-input::placeholder {
+  color: var(--ink-3);
 }
 
-.input-textarea:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
+.composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
 }
 
-/* 发送按钮 */
-.send-btn {
-  flex-shrink: 0;
-  padding: 10px 20px;
-  background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(14, 165, 233, 0.3);
-}
-
-.send-btn:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.4);
-}
-
-.send-btn:active:not(:disabled) {
-  transform: translateY(0);
-}
-
-.send-btn:disabled {
-  background: #e2e8f0;
-  color: #94a3b8;
-  cursor: not-allowed;
-  box-shadow: none;
-}
-
-/* 停止按钮 */
-.stop-btn {
-  flex-shrink: 0;
+.composer-left,
+.composer-right {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 18px;
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
-  animation: stopPulse 2s ease-in-out infinite;
+}
+
+.composer-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 6px;
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 500;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+
+.composer-tool:hover {
+  background: var(--surface-2);
+  color: var(--ink-2);
+}
+
+.composer-tool[aria-pressed="true"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tool-state {
+  font-size: 10px;
+  opacity: 0.7;
+}
+
+.composer-hint {
+  color: var(--ink-3);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.send-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--on-accent);
+  transition: background var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.send-btn:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.send-btn:disabled {
+  background: var(--surface-3);
+  color: var(--ink-3);
+  cursor: not-allowed;
+}
+
+.stop-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--ink);
+  color: var(--surface);
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
 }
 
 .stop-btn:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.5);
+  opacity: 0.86;
 }
 
 .stop-btn:active {
-  transform: translateY(0);
+  transform: scale(0.96);
 }
 
-.stop-icon {
-  font-size: 12px;
-}
-
-/* 提示信息 */
-.input-hint {
-  margin-top: 10px;
+.composer-footnote {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  flex-wrap: wrap;
+  max-width: var(--reading-w);
+  margin: 7px auto 0;
+  color: var(--ink-3);
+  font-size: 10.5px;
   text-align: center;
 }
 
-.input-hint span {
-  font-size: 12px;
-  color: #94a3b8;
+.composer-footnote .kbd {
+  height: 16px;
+  font-size: 9.5px;
 }
 
-.streaming-hint {
-  color: #ef4444 !important;
-  animation: blink 1.5s ease-in-out infinite;
-}
+@media (max-width: 640px) {
+  .composer-area {
+    padding: 8px 12px 10px;
+  }
 
-@keyframes stopPulse {
-  0%, 100% { box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3); }
-  50% { box-shadow: 0 2px 16px rgba(239, 68, 68, 0.5); }
-}
+  .composer {
+    padding: 8px 8px 6px 12px;
+    border-radius: var(--r-md);
+  }
 
-@keyframes blink {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
+  .composer-hint {
+    display: none;
+  }
+
+  .composer-footnote {
+    font-size: 10px;
+  }
 }
 </style>

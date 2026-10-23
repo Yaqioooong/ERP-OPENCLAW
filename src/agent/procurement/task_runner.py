@@ -4,12 +4,14 @@ Checkpoint 负责“图执行到哪一步”，本模块负责“这笔任务属
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Callable
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from langgraph.errors import GraphInterrupt
 from langgraph.types import Command
 
 from agent.procurement import initial_state
@@ -68,6 +70,10 @@ class ProcurementTaskRunner:
         task_id = new_task_id(now)
         thread_id = task_thread_id(task_id)
 
+        logger.info(
+            "procurement.task.start task_id=%s user_id=%s conversation_id=%s",
+            task_id, user_id, conversation_id,
+        )
         await self._tasks.create(
             TaskRecord(
                 task_id=task_id,
@@ -105,7 +111,114 @@ class ProcurementTaskRunner:
 
         try:
             await self._graph.ainvoke(state, config, context=context)
+        except GraphInterrupt:
+            # 图内 HITL 中断：把 snapshot 返回给上层，让上层决定如何展示。
+            pass
         except Exception as exc:
+            await self._tasks.update_status(
+                task_id=task_id,
+                status=TaskStatus.FAILED.value,
+                error={"code": "TASK_START_FAILED", "message": str(exc)},
+                now=self._now(),
+            )
+            logger.exception(
+                "procurement.task.start.failed task_id=%s error=%s",
+                task_id, exc,
+            )
+            await self._safe_emit(
+                task_id=task_id,
+                event_type=TaskEventType.TASK_FAILED,
+                data={
+                    "status": TaskStatus.FAILED.value,
+                    "error": {
+                        "code": "TASK_START_FAILED",
+                        "message": str(exc),
+                    },
+                },
+            )
+            raise
+
+        result = await self._snapshot(task_id, config, context)
+        logger.info(
+            "procurement.task.start.result task_id=%s status=%s recoverable=%s",
+            task_id, result.status, result.recoverable,
+        )
+        await self._emit_task_events(result)
+        return result
+
+    async def start_background(
+            self,
+            *,
+            raw_request: str,
+            user_id: str,
+            username: str,
+            conversation_id: str | None = None,
+            request: dict | None = None,
+            roles: tuple[str, ...] = (),
+    ) -> TaskRunResult:
+        """创建任务后立即返回，图在后台运行；避免嵌套图 interrupt 传回主 Agent。"""
+        now = self._now()
+        task_id = new_task_id(now)
+        thread_id = task_thread_id(task_id)
+        await self._tasks.create(
+            TaskRecord(
+                task_id=task_id,
+                thread_id=thread_id,
+                conversation_id=conversation_id,
+                user_id=user_id,
+                status=TaskStatus.RUNNING.value,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await self._safe_emit(
+            task_id=task_id,
+            event_type=TaskEventType.TASK_STARTED,
+            data={
+                "status": TaskStatus.RUNNING.value,
+                "conversation_id": conversation_id,
+            },
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+        context = ProcurementContext(
+            user_id=user_id, username=username, roles=roles
+        )
+        state = initial_state(
+            task_id=task_id,
+            raw_request=raw_request,
+            user_id=user_id,
+            username=username,
+            conversation_id=conversation_id,
+            request=request,
+            now=now.isoformat(),
+        )
+        asyncio.create_task(
+            self._run_background_start(task_id, config, context, state),
+            name=f"procurement-start-{task_id}",
+        )
+        logger.info(
+            "procurement.task.start.background task_id=%s user_id=%s",
+            task_id, user_id,
+        )
+        return TaskRunResult(
+            task_id=task_id,
+            thread_id=thread_id,
+            status=TaskStatus.RUNNING.value,
+            current_node=None,
+            interrupt=None,
+            state_summary={},
+            recoverable=True,
+        )
+
+    async def _run_background_start(self, task_id, config, context, state):
+        try:
+            await self._graph.ainvoke(state, config, context=context)
+        except GraphInterrupt:
+            pass
+        except Exception as exc:
+            logger.exception(
+                "procurement.task.background.failed task_id=%s", task_id
+            )
             await self._tasks.update_status(
                 task_id=task_id,
                 status=TaskStatus.FAILED.value,
@@ -123,11 +236,13 @@ class ProcurementTaskRunner:
                     },
                 },
             )
-            raise
-
+            return
         result = await self._snapshot(task_id, config, context)
+        logger.info(
+            "procurement.task.background.result task_id=%s status=%s",
+            task_id, result.status,
+        )
         await self._emit_task_events(result)
-        return result
 
     async def resume(
             self,
@@ -159,6 +274,10 @@ class ProcurementTaskRunner:
         ):
             raise PermissionError("TASK_NOT_FOUND_OR_FORBIDDEN")
 
+        logger.info(
+            "procurement.task.resume task_id=%s user_id=%s status=%s",
+            task_id, user_id, record.status,
+        )
         config = {"configurable": {"thread_id": record.thread_id}}
         context = ProcurementContext(
             user_id=user_id, username=username, roles=roles
@@ -191,8 +310,15 @@ class ProcurementTaskRunner:
             event_type=TaskEventType.TASK_RESUMED,
             data={"status": record.status},
         )
-        await self._graph.ainvoke(input_value, config, context=context)
+        try:
+            await self._graph.ainvoke(input_value, config, context=context)
+        except GraphInterrupt:
+            pass
         result = await self._snapshot(task_id, config, context)
+        logger.info(
+            "procurement.task.resume.result task_id=%s status=%s order_id=%s",
+            task_id, result.status, result.state_summary.get("order_id"),
+        )
         await self._emit_task_events(result)
         return result
 
@@ -367,6 +493,9 @@ class ProcurementTaskRunner:
                 "approval_status": values.get("approval_status"),
                 "approved_by": values.get("approved_by"),
                 "approval_expires_at": values.get("approval_expires_at"),
+                "analysis_report": values.get("analysis_report"),
+                "analysis_validation": values.get("analysis_validation"),
+                "analysis_sandbox": values.get("analysis_sandbox"),
                 "execution_status": values.get("execution_status"),
                 "order_id": values.get("order_id"),
                 "requires_manual_review": values.get(

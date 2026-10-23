@@ -1,77 +1,220 @@
 /**
- * 全局样式文件
+ * 全局设计系统
  *
- * 定义现代化科技风格的样式 - 参考大厂设计
+ * 纸墨青：暖白画布 + 墨色文本 + 深青强调色
+ * 所有颜色、圆角、阴影、动效都从这里取，组件内不再写死色值。
  */
 
 /* ============================================================
-   CSS 变量定义 - 浅色主题配色方案
+   1. Design tokens — light
    ============================================================ */
 :root {
-  /* 颜色变量 - 参考 ChatGPT/DeepSeek 风格 */
-  --color-primary: #0ea5e9;
-  --color-primary-hover: #0284c7;
-  --color-secondary: #6366f1;
-  --color-accent: #8b5cf6;
-  --color-bg: #ffffff;
-  --color-bg-secondary: #f8fafc;
-  --color-bg-tertiary: #f1f5f9;
-  --color-bg-hover: #e2e8f0;
-  --color-white: #ffffff;
-  --color-border: #e2e8f0;
-  --color-border-light: #f1f5f9;
-  --color-text: #1e293b;
-  --color-text-secondary: #64748b;
-  --color-text-muted: #94a3b8;
+  color-scheme: light;
 
-  /* 阴影 - 柔和效果 */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.05);
-  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.05);
-  --shadow-glow: 0 0 20px rgba(14, 165, 233, 0.15);
+  /* 表面 */
+  --canvas: #f6f5f1;
+  --canvas-deep: #efeee9;
+  --surface: #ffffff;
+  --surface-2: #f3f1ec;
+  --surface-3: #eae7df;
+  --overlay: rgba(25, 24, 23, 0.32);
 
-  /* 圆角 - 柔和圆润 */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
+  /* 线条 */
+  --line: #e6e2d9;
+  --line-strong: #d5d0c4;
+  --line-soft: #efede7;
 
-  /* 过渡 - 流畅动画 */
-  --transition-fast: 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-normal: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  /* 文本 */
+  --ink: #191817;
+  --ink-2: #5f5b54;
+  --ink-3: #7a756c;
+  --ink-inverse: #fbfaf7;
+  --on-accent: #ffffff;
+  --on-danger: #ffffff;
+
+  /* 强调 */
+  --accent: #0f766e;
+  --accent-hover: #0b5f54;
+  --accent-soft: #e7f2ef;
+  --accent-softer: #f0f7f5;
+  --accent-ring: rgba(15, 118, 110, 0.18);
+
+  /* 语义 */
+  --danger: #b42318;
+  --danger-hover: #93190f;
+  --danger-soft: #fef3f2;
+  --warn: #b54708;
+  --warn-soft: #fffaeb;
+  --success: #067647;
+  --success-soft: #ecfdf3;
+  --info: #175cd3;
+  --info-soft: #eff8ff;
+  --violet: #6941c6;
+  --violet-soft: #f4f3ff;
+
+  /* 阴影 */
+  --shadow-xs: 0 1px 2px rgba(25, 24, 23, 0.04);
+  --shadow-sm: 0 1px 3px rgba(25, 24, 23, 0.06), 0 1px 2px rgba(25, 24, 23, 0.04);
+  --shadow-float: 0 12px 32px -16px rgba(25, 24, 23, 0.28), 0 2px 8px rgba(25, 24, 23, 0.06);
+
+  /* 圆角 */
+  --r-xs: 8px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 24px;
+  --r-full: 999px;
+
+  /* 字体 */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+    "HarmonyOS Sans SC", "Noto Sans SC", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", monospace;
+
+  /* 动效 */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur: 200ms;
+  --dur-slow: 320ms;
+
+  /* 布局 */
+  --header-h: 56px;
+  --sidebar-w: 264px;
+  --reading-w: 760px;
+  --task-panel-w: 480px;
 }
 
 /* ============================================================
-   基础重置
+   2. Design tokens — dark
    ============================================================ */
-* {
-  margin: 0;
-  padding: 0;
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --canvas: #111110;
+  --canvas-deep: #0b0b0a;
+  --surface: #191918;
+  --surface-2: #222220;
+  --surface-3: #2b2b28;
+  --overlay: rgba(0, 0, 0, 0.55);
+
+  --line: #2e2d2a;
+  --line-strong: #3d3c38;
+  --line-soft: #242421;
+
+  --ink: #f2f0eb;
+  --ink-2: #a9a49b;
+  --ink-3: #8a857c;
+  --ink-inverse: #141413;
+  --on-accent: #06201d;
+  --on-danger: #2a0a08;
+
+  --accent: #2fbfa8;
+  --accent-hover: #45d3bc;
+  --accent-soft: rgba(47, 191, 168, 0.12);
+  --accent-softer: rgba(47, 191, 168, 0.06);
+  --accent-ring: rgba(47, 191, 168, 0.24);
+
+  --danger: #f97066;
+  --danger-hover: #ff8a80;
+  --danger-soft: rgba(249, 112, 102, 0.12);
+  --warn: #fdb022;
+  --warn-soft: rgba(253, 176, 34, 0.12);
+  --success: #47cd89;
+  --success-soft: rgba(71, 205, 137, 0.12);
+  --info: #84adff;
+  --info-soft: rgba(132, 173, 255, 0.12);
+  --violet: #bdb4fe;
+  --violet-soft: rgba(189, 180, 254, 0.12);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow-float: 0 16px 40px -20px rgba(0, 0, 0, 0.8);
+}
+
+/* ============================================================
+   3. Reset & base
+   ============================================================ */
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
-html, body, #app {
+html,
+body,
+#app {
   height: 100%;
-  width: 100%;
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--canvas);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background: var(--color-bg);
-  color: var(--color-text);
-  line-height: 1.6;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+figure,
+blockquote,
+dl,
+dd {
+  margin: 0;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+
+a {
+  color: var(--accent);
+}
+
+img {
+  max-width: 100%;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
 }
 
 /* ============================================================
-   滚动条样式 - 现代风格
+   4. Scrollbar
    ============================================================ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -79,99 +222,282 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
+  background: var(--line-strong);
+  border: 3px solid transparent;
+  border-radius: var(--r-full);
+  background-clip: content-box;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--ink-3);
+  border: 3px solid transparent;
+  background-clip: content-box;
 }
 
 /* ============================================================
-   工具类
+   5. Shared primitives
    ============================================================ */
-
-/* Flexbox 工具 */
-.flex {
-  display: flex;
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
-.flex-col {
-  flex-direction: column;
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-sm);
+  color: var(--ink-2);
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 
-.flex-1 {
-  flex: 1;
+.icon-btn:hover {
+  background: var(--surface-2);
+  color: var(--ink);
 }
 
-/* 文本工具 */
-.text-center {
-  text-align: center;
+.icon-btn:active {
+  background: var(--surface-3);
 }
 
-.text-muted {
-  color: var(--color-text-muted);
+.icon-btn[aria-pressed="true"],
+.icon-btn.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
-/* 间距工具 */
-.p-2 {
-  padding: 8px;
-}
-
-.p-4 {
-  padding: 16px;
-}
-
-.m-0 {
-  margin: 0;
-}
-
-/* 按钮基础样式 - 现代风格 */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 10px 20px;
-  border: none;
-  border-radius: var(--radius-md);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-normal);
-  position: relative;
-  overflow: hidden;
+  gap: 6px;
+  height: 34px;
+  padding: 0 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font-size: 13px;
+  font-weight: 550;
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-secondary) 100%);
-  color: white;
-  box-shadow: var(--shadow-md);
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--shadow-xs);
 }
 
-.btn-primary:hover {
-  transform: translateY(-1px);
-  box-shadow: var(--shadow-lg);
-}
-
-.btn-primary:active {
-  transform: translateY(0);
-}
-
-.btn-primary:disabled {
-  background: #e2e8f0;
-  color: var(--color-text-muted);
-  cursor: not-allowed;
-  box-shadow: none;
-  transform: none;
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
 
 .btn-ghost {
-  background: transparent;
-  color: var(--color-text);
-  border: 1px solid var(--color-border);
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
 }
 
-.btn-ghost:hover {
-  background: var(--color-bg-hover);
-  border-color: var(--color-text-muted);
+.btn-ghost:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--line-strong);
+}
+
+.btn-quiet {
+  color: var(--ink-2);
+}
+
+.btn-quiet:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: var(--on-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--danger-hover);
+}
+
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--danger);
+  border-color: transparent;
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+
+.btn-sm {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-bottom-color: var(--line-strong);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--ink-3);
+  font-family: var(--font-sans);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--r-full);
+  background: var(--surface-2);
+  color: var(--ink-2);
+  font-size: 11.5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ============================================================
+   6. Reka UI shared overlay styles
+   ============================================================ */
+.ds-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+  animation: fadeIn var(--dur) var(--ease);
+}
+
+.ds-dialog {
+  position: fixed;
+  z-index: 61;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-float);
+  animation: dialogIn var(--dur) var(--ease);
+}
+
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.menu-content {
+  z-index: 70;
+  min-width: 148px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  animation: fadeIn var(--dur-fast) var(--ease);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 9px;
+  border-radius: 7px;
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  outline: none;
+  user-select: none;
+}
+
+.menu-item[data-highlighted] {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.menu-item.danger {
+  color: var(--danger);
+}
+
+.menu-item.danger[data-highlighted] {
+  background: var(--danger-soft);
+}
+
+/* ============================================================
+   7. Reduced motion
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

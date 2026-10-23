@@ -1,3 +1,4 @@
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
@@ -5,6 +6,9 @@ from zoneinfo import ZoneInfo
 
 # src/agent/procurement/config.py -> parents[0]=procurement, [1]=agent, [2]=src, [3]=项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+# 采购链路使用 INFO 级别输出关键节点，即使主 Agent 根 logger 是 ERROR。
+logging.getLogger("agent.procurement").setLevel(logging.INFO)
 
 # PostgreSQL 业务事实库（审批、任务、订单执行记录）
 # 本地默认使用 Unix socket + 当前系统用户；生产环境使用完整 DSN。

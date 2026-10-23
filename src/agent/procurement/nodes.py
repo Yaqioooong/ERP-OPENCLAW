@@ -1,3 +1,5 @@
+import logging
+import time
 from typing import Callable
 
 from langgraph.runtime import Runtime
@@ -12,6 +14,8 @@ from agent.procurement.rules import validate_request_fields, make_idempotency_ke
     make_approval_id, compute_plan_hash, validate_plan as validate_plan_rules
 from agent.procurement.state import ProcurementState
 from agent.schema import ProcurementContext
+
+logger = logging.getLogger(__name__)
 
 
 def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
@@ -409,6 +413,12 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
 
         approval_id = make_approval_id(state["task_id"], plan.version, actual_hash)
         now = deps.now()
+        logger.info(
+            "procurement.approval.prepare task_id=%s approval_id=%s "
+            "plan_version=%s plan_hash=%s total_amount=%s",
+            state["task_id"], approval_id, plan.version, actual_hash,
+            plan.total_amount,
+        )
         expires_at = now + deps.approval_ttl
         try:
             await deps.approval_repository.ensure_pending(
@@ -613,8 +623,18 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             decided_by_roles=sorted(_roles(runtime)),
         )
         if decision_result == ApprovalDecisionResult.STALE:
+            logger.warning(
+                "procurement.approval.stale task_id=%s approval_id=%s",
+                state["task_id"], approval_id,
+            )
             return _failed("APPROVAL_STALE", "审批记录状态已变化，不能重复使用。")
         # APPLIED / ALREADY_APPLIED 都继续：后者是节点重放时的幂等结果。
+        logger.info(
+            "procurement.approval.decided task_id=%s approval_id=%s "
+            "decision=%s status=%s decided_by=%s outcome=%s",
+            state["task_id"], approval_id, decision.decision.value,
+            target_status, runtime.context.user_id, decision_result.value,
+        )
 
         now_iso = deps.now().isoformat()
         if decision.decision == DecisionType.REJECT:
@@ -688,6 +708,13 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         plan = ProcurementPlan.model_validate(state["procurement_plan"])
         plan_hash = compute_plan_hash(plan)
         key = make_idempotency_key(state["task_id"], plan.version, plan_hash)
+        started = time.monotonic()
+        logger.info(
+            "procurement.order.create.start task_id=%s approval_id=%s "
+            "plan_version=%s idempotency_key=%s total_amount=%s items=%s",
+            state["task_id"], state.get("approval_id"), plan.version, key,
+            plan.total_amount, len(plan.items),
+        )
 
         try:
             result: OrderExecutionResult = await deps.order_executor.create_order(
@@ -714,6 +741,14 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     message=f"订单请求异常，结果未知：{exc}",
                 ),
             )
+
+        logger.info(
+            "procurement.order.create.result task_id=%s status=%s order_id=%s "
+            "error=%s duration_ms=%s",
+            state["task_id"], result.status.value, result.order_id,
+            result.error.code if result.error else None,
+            int((time.monotonic() - started) * 1000),
+        )
 
         if result.status == ExecutionStatus.NOT_STARTED:
             return {
@@ -754,6 +789,11 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         if not _can_execute(state, runtime):
             return _failed("FORBIDDEN", "当前用户无权核验该采购任务。")
 
+        started = time.monotonic()
+        logger.info(
+            "procurement.order.verify.start task_id=%s order_id=%s",
+            state["task_id"], state.get("order_id"),
+        )
         try:
             if deps.order_reconciler is not None:
                 result: OrderVerificationResult = (
@@ -774,6 +814,15 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     message=f"订单核验失败：{exc}",
                 ),
             )
+
+        logger.info(
+            "procurement.order.verify.result task_id=%s status=%s order_id=%s "
+            "manual_review=%s error=%s duration_ms=%s",
+            state["task_id"], result.status.value, result.order_id,
+            result.requires_manual_review,
+            result.error.code if result.error else None,
+            int((time.monotonic() - started) * 1000),
+        )
 
         if result.status == ExecutionStatus.SUCCEEDED:
             return {

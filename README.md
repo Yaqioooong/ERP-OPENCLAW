@@ -7,6 +7,7 @@
 - **多 Agent 协作**：主 Agent 通过 `task` 工具把任务委派给 `procurement-analyst`（采购分析）或 `procurement-order`（订单操作），同一条消息中可并行委派多个任务。
 - **采购分析**：供应商比价、物料行情、库存预警、订单明细查询，支持 26 种图表与地图可视化，最终输出结构化报告。
 - **订单操作**：采购订单创建、修改与查询；关键字段缺失时通过 HITL 中断向用户补充信息，绝不猜测业务数据。
+- **完整采购任务**：前端「采购任务」面板和主 Agent 工具都可以启动“分析 → 审批 → 下单 → 核验”状态机。
 - **长期记忆**：用户偏好按 `user_id` 隔离，持久化在 Redis Store 的 `/memories/{user_id}/preferences.md`，跨会话生效。
 - **技能系统**：`/skills/` 下按主 Agent、采购、订单三个作用域组织技能，支持渐进式加载与用户自定义技能的持久化。
 - **会话持久化**：Redis Checkpointer 保存对话状态，前端可浏览、恢复和删除历史会话。
@@ -112,7 +113,38 @@ LANGSMITH_PROJECT=...
 - `PROCUREMENT_TEST_DATABASE_URL`：测试库，默认 `postgresql:///erp_openclaw_test`。
 - `APP_ENV=production`：日志写入 `erp_agent.log`，否则输出到控制台。
 
-### 4. 启动服务
+### 4. 运行评测
+
+30 个业务场景、故障注入和指标报告：
+
+```bash
+PYTHONPATH=src .venv/bin/python -m evals.cli \
+  --output reports/eval_baseline.md
+```
+
+输出：
+
+```text
+reports/eval_baseline.md
+reports/eval_baseline.json
+```
+
+### 5. 使用采购任务
+
+前端页面右上角点击「采购任务」，填写物料、数量、仓库和预算即可启动完整流程；
+面板会订阅任务 SSE，展示审批、分析报告、执行状态和订单结果。
+
+也可以在聊天中直接说“走完整采购审批流程”，主 Agent 会调用：
+
+```text
+start_procurement_task
+get_procurement_task
+resume_procurement_task
+```
+
+主 Agent 创建任务后，前端会自动打开「采购任务」面板，后续审批通过按钮完成，不再依赖普通聊天输入。
+
+### 6. 启动服务
 
 一键启动前后端：
 

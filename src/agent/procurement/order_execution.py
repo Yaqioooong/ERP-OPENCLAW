@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import time
 from datetime import datetime
 from typing import Callable
 
@@ -24,6 +26,8 @@ from agent.procurement.models import (
 )
 from agent.procurement.ports import ApprovalRepository
 from agent.procurement.rules import compute_plan_hash, make_order_number
+
+logger = logging.getLogger(__name__)
 
 
 class SafeOrderExecutionService:
@@ -99,6 +103,12 @@ class SafeOrderExecutionService:
             updated_at=now,
         )
         record = await self._executions.ensure_pending(record)
+        logger.info(
+            "procurement.execution.record task_id=%s key=%s order_number=%s "
+            "status=%s attempt=%s",
+            task_id, idempotency_key, order_number, record.status.value,
+            record.attempt_count,
+        )
 
         if record.attempt_count >= self._max_attempts and record.status == ExecutionStatus.FAILED:
             return self._failed_from_record(record)
@@ -107,6 +117,10 @@ class SafeOrderExecutionService:
             idempotency_key=idempotency_key,
             now=now,
             lease_seconds=self._lease_seconds,
+        )
+        logger.info(
+            "procurement.execution.acquire task_id=%s key=%s acquired=%s",
+            task_id, idempotency_key, acquired,
         )
         if not acquired:
             current = await self._executions.get(idempotency_key)
@@ -124,6 +138,11 @@ class SafeOrderExecutionService:
                 "另一个请求正在执行订单，先查询结果，不要重复创建。",
             )
 
+        started = time.monotonic()
+        logger.info(
+            "procurement.execution.create.start task_id=%s key=%s order_number=%s",
+            task_id, idempotency_key, order_number,
+        )
         try:
             order = await self._gateway.create_order(
                 order_number=order_number,
@@ -131,6 +150,12 @@ class SafeOrderExecutionService:
                 idempotency_key=idempotency_key,
             )
         except GatewayTimeout as exc:
+            logger.warning(
+                "procurement.execution.create.timeout task_id=%s key=%s "
+                "duration_ms=%s error=%s",
+                task_id, idempotency_key,
+                int((time.monotonic() - started) * 1000), exc,
+            )
             await self._executions.mark_unknown(
                 idempotency_key=idempotency_key,
                 code="ORDER_RESULT_UNKNOWN",
@@ -142,6 +167,12 @@ class SafeOrderExecutionService:
                 f"订单请求超时，结果未知：{exc}",
             )
         except GatewayBusinessError as exc:
+            logger.warning(
+                "procurement.execution.create.business_error task_id=%s key=%s "
+                "code=%s duplicate=%s duration_ms=%s",
+                task_id, idempotency_key, exc.code, exc.duplicate,
+                int((time.monotonic() - started) * 1000),
+            )
             if exc.duplicate:
                 return await self._reconcile_after_duplicate(
                     idempotency_key=idempotency_key,
@@ -163,6 +194,12 @@ class SafeOrderExecutionService:
                 ),
             )
         except GatewayUnavailable as exc:
+            logger.warning(
+                "procurement.execution.create.unavailable task_id=%s key=%s "
+                "duration_ms=%s error=%s",
+                task_id, idempotency_key,
+                int((time.monotonic() - started) * 1000), exc,
+            )
             await self._executions.mark_unknown(
                 idempotency_key=idempotency_key,
                 code="ERP_UNAVAILABLE",
@@ -180,6 +217,12 @@ class SafeOrderExecutionService:
             order_number=order.order_number,
             response=order.raw,
             now=self._now(),
+        )
+        logger.info(
+            "procurement.execution.create.success task_id=%s key=%s "
+            "order_id=%s order_number=%s duration_ms=%s",
+            task_id, idempotency_key, order.order_id, order.order_number,
+            int((time.monotonic() - started) * 1000),
         )
         return OrderExecutionResult(
             status=ExecutionStatus.SUCCEEDED,

@@ -302,17 +302,73 @@ async def stream_chat_response(
                     interrupt_value = interrupt.value
 
                     if "action_requests" in interrupt_value:
-                        # ---- 第 2 层：HITL 审批中断（interrupt_on 配置）----
-                        yield create_sse_message({
-                            "type": "interrupt",
-                            "interrupt_type": "hitl_approval",
-                            "action_requests": interrupt_value["action_requests"],
-                            "review_configs": interrupt_value.get("review_configs", []),
-                            "thread_id": thread_id,
-                        })
-                        write_debug_log(debug_log, "INTERRUPT_HITL", {
-                            "actions": [a["name"] for a in interrupt_value["action_requests"]],
-                        })
+                        actions = interrupt_value["action_requests"]
+                        first_action = actions[0] if actions else {}
+                        if first_action.get("name") == "procurement_plan":
+                            args = first_action.get("args") or {}
+                            details = args.get("orderDetail") or []
+                            # 优先透传业务节点给出的完整摘要（物料名称、仓库、理由、缺口等），
+                            # 仅有 action_requests 时再回退到从 args 推导。
+                            rich_summary = interrupt_value.get("summary")
+                            summary = {
+                                "supplier_name": args.get("supplierName"),
+                                "total_amount": args.get("totalAmount"),
+                                "currency": "CNY",
+                                "items": [
+                                    {
+                                        "part_id": item.get("partId"),
+                                        "quantity": item.get("quantity"),
+                                        "unit_price": item.get("unitPrice"),
+                                        "subtotal": item.get("subtotal"),
+                                    }
+                                    for item in details
+                                ],
+                            }
+                            if isinstance(rich_summary, dict):
+                                if rich_summary.get("items"):
+                                    summary["items"] = rich_summary["items"]
+                                for key in (
+                                    "supplier_id",
+                                    "supplier_name",
+                                    "warehouse_location",
+                                    "total_amount",
+                                    "currency",
+                                    "expected_delivery_date",
+                                    "inventory_gaps",
+                                    "rationale",
+                                    "analysis_report",
+                                    "analysis_validation",
+                                ):
+                                    if rich_summary.get(key) is not None:
+                                        summary[key] = rich_summary[key]
+
+                            yield create_sse_message({
+                                "type": "interrupt",
+                                "interrupt_type": "procurement_task_approval",
+                                "task_id": interrupt_value.get("task_id") or args.get("taskId"),
+                                "approval_id": interrupt_value.get("approval_id"),
+                                "plan_version": interrupt_value.get("plan_version"),
+                                "plan_hash": interrupt_value.get("plan_hash"),
+                                "action_requests": actions,
+                                "review_configs": interrupt_value.get("review_configs", []),
+                                "summary": summary,
+                                "thread_id": thread_id,
+                            })
+                            write_debug_log(debug_log, "INTERRUPT_PROCUREMENT_APPROVAL", {
+                                "task_id": args.get("taskId"),
+                            })
+                        else:
+                            # ---- 第 2 层：旧订单 HITL 审批 ----
+                            yield create_sse_message({
+                                "type": "interrupt",
+                                "interrupt_type": "hitl_approval",
+                                "action_requests": actions,
+                                "review_configs": interrupt_value.get("review_configs", []),
+                                "thread_id": thread_id,
+                            })
+                            write_debug_log(debug_log, "INTERRUPT_HITL", {
+                                "actions": [a["name"] for a in actions],
+                            })
 
                     elif interrupt_value.get("type") == "order_info_request":
                         # ---- 第 1 层：数据补充中断（request_order_info 工具）----
@@ -325,6 +381,42 @@ async def stream_chat_response(
                         })
                         write_debug_log(debug_log, "INTERRUPT_SUPPLEMENT", {
                             "missing_fields": interrupt_value["missing_fields"],
+                        })
+
+                    elif interrupt_value.get("type") == "procurement_task_approval":
+                        yield create_sse_message({
+                            "type": "interrupt",
+                            "interrupt_type": "procurement_task_approval",
+                            "task_id": interrupt_value.get("task_id"),
+                            "approval_id": interrupt_value.get("approval_id"),
+                            "plan_version": interrupt_value.get("plan_version"),
+                            "plan_hash": interrupt_value.get("plan_hash"),
+                            "summary": interrupt_value.get("summary") or {},
+                            "action_requests": interrupt_value.get("action_requests", []),
+                            "review_configs": interrupt_value.get("review_configs", []),
+                            "thread_id": thread_id,
+                        })
+                        write_debug_log(debug_log, "INTERRUPT_PROCUREMENT_APPROVAL", {
+                            "task_id": interrupt_value.get("task_id"),
+                        })
+
+                    elif interrupt_value.get("type") == "procurement_task_retry":
+                        yield create_sse_message({
+                            "type": "interrupt",
+                            "interrupt_type": "procurement_task_retry",
+                            "task_id": interrupt_value.get("task_id"),
+                            "last_error": interrupt_value.get("last_error"),
+                            "options": interrupt_value.get("options", ["retry", "cancel"]),
+                            "thread_id": thread_id,
+                        })
+
+                    elif interrupt_value.get("type") == "procurement_task_clarification":
+                        yield create_sse_message({
+                            "type": "interrupt",
+                            "interrupt_type": "procurement_task_clarification",
+                            "task_id": interrupt_value.get("task_id"),
+                            "interrupt": interrupt_value.get("interrupt"),
+                            "thread_id": thread_id,
                         })
 
                     else:
@@ -370,6 +462,11 @@ async def stream_chat_response(
 
             token, metadata = chunk["data"]
             namespace = chunk.get("ns", ())
+
+            # 中间件注入的 system / human 上下文只用于模型推理，不能当作助手回复展示
+            token_type = getattr(token, "type", "")
+            if token_type in ("system", "human"):
+                continue
 
             # 判断消息来源
             is_subagent = any(s.startswith("tools:") for s in namespace)

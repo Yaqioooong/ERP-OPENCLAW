@@ -1,372 +1,702 @@
 <template>
-  <aside class="sidebar">
-    <!-- 侧边栏头部 -->
-    <div class="sidebar-header">
-      <button class="new-chat-btn" @click="$emit('new-chat')">
-        <span class="icon">+</span>
-        新建对话
-      </button>
-    </div>
-
-    <!-- 搜索框 -->
-    <div class="search-box">
-      <input
-        type="text"
-        v-model="searchKeyword"
-        placeholder="搜索会话..."
-        class="search-input"
-      />
-    </div>
-
-    <!-- 会话列表 -->
-    <div class="session-list">
-      <div class="session-list-header">
-        <span>历史记录</span>
-      </div>
-
-      <div class="session-items">
-        <div
-          v-for="session in filteredSessions"
-          :key="session.thread_id"
-          class="session-item"
-          :class="{ active: session.thread_id === currentThreadId }"
-          @click="$emit('select-session', session.thread_id)"
+  <aside
+    class="sidebar"
+    :class="{ open }"
+    aria-label="会话历史"
+    :inert="isMobile && !open"
+    :aria-hidden="isMobile && !open ? 'true' : null"
+  >
+    <div class="sidebar-head">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <Boxes :size="17" :stroke-width="2" />
+        </div>
+        <div class="brand-copy">
+          <strong>采购助手</strong>
+          <span>ERP WORKSPACE</span>
+        </div>
+        <button
+          class="icon-btn close-mobile"
+          type="button"
+          aria-label="关闭会话列表"
+          @click="$emit('close')"
         >
-          <div class="session-info">
-            <span class="session-title">{{ session.title }}</span>
-            <span class="session-time">{{ formatTime(session.updated_at) }}</span>
+          <X :size="17" />
+        </button>
+      </div>
+
+      <button class="new-chat" type="button" @click="$emit('new-chat')">
+        <Plus :size="16" />
+        <span>新建对话</span>
+        <kbd class="kbd" aria-hidden="true">⌘⇧O</kbd>
+      </button>
+
+      <div class="search">
+        <Search :size="15" class="search-icon" aria-hidden="true" />
+        <input
+          ref="searchInput"
+          v-model="keyword"
+          class="search-input"
+          type="text"
+          placeholder="搜索对话"
+          aria-label="搜索对话"
+          @keydown.esc="keyword = ''"
+        />
+        <button
+          v-if="keyword"
+          class="search-clear"
+          type="button"
+          aria-label="清空搜索"
+          @click="keyword = ''"
+        >
+          <X :size="13" />
+        </button>
+        <kbd v-else class="kbd search-kbd" aria-hidden="true">⌘K</kbd>
+      </div>
+    </div>
+
+    <nav class="sidebar-body" aria-label="会话列表">
+      <template v-if="loading">
+        <div class="skeleton-group">
+          <div class="skeleton-label" />
+          <div v-for="n in 5" :key="n" class="skeleton-row">
+            <span class="skeleton-line" :style="{ width: `${52 + ((n * 13) % 34)}%` }" />
           </div>
-          <button
-            class="delete-btn"
-            @click.stop="handleDelete(session.thread_id)"
-            title="删除会话"
-          >
-            ×
-          </button>
         </div>
+      </template>
 
-        <!-- 空状态 -->
-        <div v-if="sessions.length === 0" class="empty-state">
-          <p>暂无会话记录</p>
-          <p class="hint">开始一个新对话吧</p>
+      <template v-else-if="filteredSessions.length === 0">
+        <div class="sidebar-empty">
+          <component :is="keyword ? SearchX : Inbox" :size="22" />
+          <p>{{ keyword ? '没有找到相关对话' : '还没有对话' }}</p>
+          <span>{{ keyword ? '换个关键词试试' : '新建一个对话开始工作' }}</span>
         </div>
+      </template>
+
+      <template v-else>
+        <section v-for="group in groups" :key="group.key" class="session-group">
+          <h2 class="group-label">{{ group.label }}</h2>
+          <div class="group-items">
+            <div
+              v-for="session in group.items"
+              :key="session.thread_id"
+              class="session-row"
+              :class="{ active: session.thread_id === currentThreadId }"
+            >
+              <button
+                class="session-main"
+                type="button"
+                :aria-current="session.thread_id === currentThreadId ? 'true' : undefined"
+                :title="session.title"
+                @click="$emit('select-session', session.thread_id)"
+              >
+                <span class="session-title">{{ session.title || '未命名对话' }}</span>
+                <span class="session-time">{{ formatRelativeTime(session.updated_at) }}</span>
+              </button>
+
+              <DropdownMenuRoot>
+                <DropdownMenuTrigger as-child>
+                  <button class="row-menu" type="button" aria-label="会话操作">
+                    <MoreHorizontal :size="15" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuPortal>
+                  <DropdownMenuContent class="menu-content" :side-offset="4" align="end">
+                    <DropdownMenuItem
+                      class="menu-item danger"
+                      @select="requestDelete(session)"
+                    >
+                      <Trash2 :size="14" />
+                      删除对话
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenuPortal>
+              </DropdownMenuRoot>
+            </div>
+          </div>
+        </section>
+      </template>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="workspace-pill">
+        <span class="workspace-dot" />
+        本地工作区
       </div>
+      <span class="version">v1.1</span>
     </div>
 
-    <!-- 侧边栏底部 -->
-    <div class="sidebar-footer">
-      <div class="footer-info">
-        <span class="version">v1.0.0</span>
-      </div>
-    </div>
+    <AlertDialogRoot
+      :open="!!pendingDelete"
+      @update:open="(value) => { if (!value) pendingDelete = null }"
+    >
+      <AlertDialogPortal>
+        <AlertDialogOverlay class="ds-overlay" />
+        <AlertDialogContent class="ds-dialog delete-dialog">
+          <div class="delete-icon" aria-hidden="true">
+            <Trash2 :size="18" />
+          </div>
+          <AlertDialogTitle class="delete-title">删除这个对话？</AlertDialogTitle>
+          <AlertDialogDescription class="delete-desc">
+            “{{ pendingDelete?.title || '未命名对话' }}” 的会话记录将被永久移除，无法恢复。
+          </AlertDialogDescription>
+          <div class="delete-actions">
+            <AlertDialogCancel class="btn btn-ghost">取消</AlertDialogCancel>
+            <AlertDialogAction class="btn btn-danger" @click="confirmDelete">
+              删除
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialogPortal>
+    </AlertDialogRoot>
   </aside>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { computed, ref } from 'vue'
+import { useMediaQuery } from '@vueuse/core'
+import {
+  Boxes,
+  Inbox,
+  MoreHorizontal,
+  Plus,
+  Search,
+  SearchX,
+  Trash2,
+  X,
+} from '@lucide/vue'
+import {
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogOverlay,
+  AlertDialogPortal,
+  AlertDialogRoot,
+  AlertDialogTitle,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from 'reka-ui'
+import { formatRelativeTime } from '../utils/format'
 
-// Props 定义
 const props = defineProps({
-  sessions: {
-    type: Array,
-    default: () => []
-  },
-  currentThreadId: {
-    type: String,
-    default: null
-  }
+  sessions: { type: Array, default: () => [] },
+  currentThreadId: { type: String, default: null },
+  loading: { type: Boolean, default: false },
+  open: { type: Boolean, default: false },
 })
 
-// Emits 定义
-const emit = defineEmits(['select-session', 'new-chat', 'delete-session'])
+const emit = defineEmits(['select-session', 'new-chat', 'delete-session', 'close'])
 
-// 搜索关键词
-const searchKeyword = ref('')
+const isMobile = useMediaQuery('(max-width: 1023px)')
+const keyword = ref('')
+const searchInput = ref(null)
+const pendingDelete = ref(null)
 
-// 过滤后的会话列表
 const filteredSessions = computed(() => {
-  if (!searchKeyword.value) {
-    return props.sessions
-  }
-  return props.sessions.filter(session =>
-    session.title.toLowerCase().includes(searchKeyword.value.toLowerCase())
+  const list = props.sessions || []
+  const query = keyword.value.trim().toLowerCase()
+  if (!query) return list
+  return list.filter((session) =>
+    String(session.title || '').toLowerCase().includes(query),
   )
 })
 
-/**
- * 格式化时间
- */
-function formatTime(timestamp) {
-  if (!timestamp) return ''
+const groups = computed(() => {
+  const startOfToday = new Date()
+  startOfToday.setHours(0, 0, 0, 0)
+  const todayStart = startOfToday.getTime()
+  const day = 24 * 60 * 60 * 1000
 
-  const date = new Date(timestamp)
-  const now = new Date()
-  const diff = now - date
+  const buckets = [
+    { key: 'today', label: '今天', items: [] },
+    { key: 'yesterday', label: '昨天', items: [] },
+    { key: 'week', label: '过去 7 天', items: [] },
+    { key: 'older', label: '更早', items: [] },
+  ]
 
-  // 一天内显示相对时间
-  if (diff < 24 * 60 * 60 * 1000) {
-    const hours = Math.floor(diff / (60 * 60 * 1000))
-    if (hours < 1) {
-      const minutes = Math.floor(diff / (60 * 1000))
-      return minutes < 1 ? '刚刚' : `${minutes} 分钟前`
+  for (const session of filteredSessions.value) {
+    const time = new Date(session.updated_at || 0).getTime()
+    if (Number.isNaN(time) || time < todayStart - 7 * day) {
+      buckets[3].items.push(session)
+    } else if (time >= todayStart) {
+      buckets[0].items.push(session)
+    } else if (time >= todayStart - day) {
+      buckets[1].items.push(session)
+    } else {
+      buckets[2].items.push(session)
     }
-    return `${hours} 小时前`
   }
 
-  // 超过一天显示日期
-  return `${date.getMonth() + 1}/${date.getDate()}`
+  return buckets.filter((bucket) => bucket.items.length > 0)
+})
+
+function requestDelete(session) {
+  pendingDelete.value = session
 }
 
-/**
- * 处理删除会话
- */
-function handleDelete(threadId) {
-  if (confirm('确定要删除这个会话吗？')) {
-    emit('delete-session', threadId)
-  }
+function confirmDelete() {
+  if (!pendingDelete.value) return
+  emit('delete-session', pendingDelete.value.thread_id)
+  pendingDelete.value = null
 }
+
+function focusSearch() {
+  searchInput.value?.focus()
+  searchInput.value?.select()
+}
+
+defineExpose({ focusSearch })
 </script>
 
 <style scoped>
 .sidebar {
-  width: 280px;
-  height: 100vh;
-  background: #ffffff;
-  color: #1e293b;
   display: flex;
   flex-direction: column;
+  width: var(--sidebar-w);
+  height: 100%;
   flex-shrink: 0;
-  border-right: 1px solid #e2e8f0;
-  position: relative;
+  border-right: 1px solid var(--line);
+  background: var(--canvas);
 }
 
-/* 侧边栏头部 */
-.sidebar-header {
-  padding: 20px 16px;
-  border-bottom: 1px solid #f1f5f9;
-  background: #fafafa;
+/* 头部 */
+.sidebar-head {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 12px 12px;
 }
 
-.logo {
+.brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 20px;
+  gap: 9px;
+  padding: 2px 6px 4px;
 }
 
-.logo-icon {
-  height: 60px;
-  width: auto;
-}
-
-.logo-text {
-  font-size: 20px;
-  font-weight: 700;
-  background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-  letter-spacing: 0.5px;
-}
-
-.new-chat-btn {
-  width: 100%;
-  display: flex;
+.brand-mark {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
-  padding: 12px 20px;
-  background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  font-size: 14px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--on-accent);
+  box-shadow: var(--shadow-xs);
+}
+
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+}
+
+.brand-copy strong {
+  color: var(--ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.brand-copy span {
+  color: var(--ink-3);
+  font-size: 8.5px;
   font-weight: 600;
-  cursor: pointer;
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 4px 12px rgba(14, 165, 233, 0.3);
-  position: relative;
-  overflow: hidden;
+  letter-spacing: 0.1em;
 }
 
-.new-chat-btn:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 8px 20px rgba(14, 165, 233, 0.4);
+.close-mobile {
+  display: none;
+  margin-left: auto;
 }
 
-.new-chat-btn:active {
-  transform: translateY(0);
+.new-chat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  box-shadow: var(--shadow-xs);
+  transition: border-color var(--dur-fast) var(--ease),
+    background var(--dur-fast) var(--ease);
 }
 
-.new-chat-btn .icon {
-  font-size: 20px;
-  font-weight: 300;
+.new-chat:hover {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--line));
+  background: var(--accent-softer);
 }
 
-/* 搜索框 */
-.search-box {
-  padding: 16px;
+.new-chat svg {
+  color: var(--accent);
+}
+
+.new-chat .kbd {
+  margin-left: auto;
+  opacity: 0.8;
+}
+
+/* 搜索 */
+.search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 8px 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: var(--canvas-deep);
+  transition: background var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+
+.search:focus-within {
+  border-color: var(--line-strong);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.search-icon {
+  flex-shrink: 0;
+  color: var(--ink-3);
 }
 
 .search-input {
-  width: 100%;
-  padding: 12px 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  color: #1e293b;
-  font-size: 14px;
+  flex: 1;
+  min-width: 0;
+  border: 0;
   outline: none;
-  transition: all 0.3s ease;
-}
-
-.search-input:focus {
-  border-color: #0ea5e9;
-  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
 }
 
 .search-input::placeholder {
-  color: #94a3b8;
+  color: var(--ink-3);
+}
+
+.search-kbd {
+  flex-shrink: 0;
+}
+
+.search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  color: var(--ink-3);
+}
+
+.search-clear:hover {
+  background: var(--surface-2);
+  color: var(--ink);
 }
 
 /* 会话列表 */
-.session-list {
+.sidebar-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 4px 0;
+  padding: 2px 8px 12px;
 }
 
-.session-list::-webkit-scrollbar {
-  width: 4px;
+.session-group + .session-group {
+  margin-top: 14px;
 }
 
-.session-list::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.session-list::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 2px;
-}
-
-.session-list::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-
-.session-list-header {
-  padding: 12px 16px 8px;
-  font-size: 12px;
-  color: #94a3b8;
-  text-transform: uppercase;
-  letter-spacing: 1px;
+.group-label {
+  padding: 6px 8px 4px;
+  color: var(--ink-3);
+  font-size: 10.5px;
   font-weight: 600;
+  letter-spacing: 0.06em;
 }
 
-.session-items {
-  padding: 0 12px;
+.group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
-.session-item {
+.session-row {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 12px 14px;
-  margin-bottom: 4px;
-  border-radius: 10px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: 1px solid transparent;
+  border-radius: var(--r-xs);
+  transition: background var(--dur-fast) var(--ease);
 }
 
-.session-item:hover {
-  background: #f1f5f9;
+.session-row:hover {
+  background: var(--surface-2);
 }
 
-.session-item.active {
-  background: #e0f2fe;
-  border-color: #7dd3fc;
+.session-row.active {
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--line), var(--shadow-xs);
 }
 
-.session-info {
+.session-row.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.session-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   flex: 1;
-  overflow: hidden;
+  min-width: 0;
+  height: 36px;
+  padding: 0 6px 0 10px;
+  border-radius: var(--r-xs);
+  text-align: left;
 }
 
 .session-title {
-  display: block;
-  font-size: 14px;
-  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  color: #1e293b;
+  color: var(--ink-2);
+  font-size: 12.8px;
   font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-row.active .session-title {
+  color: var(--ink);
+  font-weight: 550;
 }
 
 .session-time {
-  display: block;
-  font-size: 12px;
-  color: #94a3b8;
-  margin-top: 3px;
-}
-
-.session-item.active .session-time {
-  color: #0ea5e9;
-}
-
-.delete-btn {
+  flex-shrink: 0;
+  color: var(--ink-3);
+  font-size: 10.5px;
   opacity: 0;
-  padding: 6px 10px;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
-  color: #dc2626;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  transition: all 0.2s ease;
+  transition: opacity var(--dur-fast) var(--ease);
 }
 
-.session-item:hover .delete-btn {
+.session-row:hover .session-time,
+.session-row.active .session-time,
+.session-row:focus-within .session-time {
   opacity: 1;
 }
 
-.delete-btn:hover {
-  background: #fee2e2;
-  border-color: #f87171;
+.row-menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin-right: 4px;
+  border-radius: 6px;
+  color: var(--ink-3);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+
+.session-row:hover .row-menu,
+.session-row:focus-within .row-menu,
+.row-menu[data-state='open'] {
+  opacity: 1;
+}
+
+.row-menu:hover {
+  background: var(--surface-3);
+  color: var(--ink);
+}
+
+/* 骨架屏 */
+.skeleton-group {
+  padding: 8px 4px;
+}
+
+.skeleton-label {
+  width: 44px;
+  height: 8px;
+  margin: 6px 6px 10px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+.skeleton-row {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 8px;
+}
+
+.skeleton-line {
+  display: block;
+  height: 9px;
+  border-radius: 4px;
+  background: var(--surface-3);
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 /* 空状态 */
-.empty-state {
-  padding: 60px 24px;
+.sidebar-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 48px 16px;
+  color: var(--ink-3);
   text-align: center;
-  color: #94a3b8;
 }
 
-.empty-state p {
-  margin-bottom: 10px;
+.sidebar-empty p {
+  margin-top: 6px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  font-weight: 550;
 }
 
-.empty-state .hint {
-  font-size: 13px;
-  color: #cbd5e1;
+.sidebar-empty span {
+  font-size: 11.5px;
 }
 
-/* 侧边栏底部 */
-.sidebar-footer {
-  padding: 16px;
-  border-top: 1px solid #f1f5f9;
-  background: #fafafa;
-}
-
-.footer-info {
+/* 底部 */
+.sidebar-foot {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.workspace-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.workspace-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
 }
 
 .version {
-  font-size: 12px;
-  color: #94a3b8;
-  letter-spacing: 0.5px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+
+/* 删除确认 */
+.delete-dialog {
+  top: 50%;
+  left: 50%;
+  width: min(400px, calc(100vw - 32px));
+  padding: 22px;
+  border-radius: var(--r-lg);
+  transform: translate(-50%, -50%);
+  animation: dialogCenter var(--dur) var(--ease);
+}
+
+@keyframes dialogCenter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, calc(-50% + 6px)) scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.delete-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.delete-title {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.delete-desc {
+  margin-top: 6px;
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.delete-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+@media (hover: none) {
+  .row-menu,
+  .session-time {
+    opacity: 1;
+  }
+}
+
+/* 移动端 */
+@media (max-width: 1023px) {
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 55;
+    width: min(300px, 86vw);
+    border-right: 1px solid var(--line);
+    box-shadow: var(--shadow-float);
+    transform: translateX(-102%);
+    transition: transform var(--dur-slow) var(--ease);
+  }
+
+  .sidebar.open {
+    transform: translateX(0);
+  }
+
+  .close-mobile {
+    display: inline-flex;
+  }
 }
 </style>
