@@ -167,7 +167,7 @@ def _business_error(
     if duplicate:
         error_code = ToolErrorCode.CONFLICT
         retryable = False
-    elif code_value.upper() == "NOT_FOUND":
+    elif code_value.upper() in {"NOT_FOUND", "602"}:
         error_code = ToolErrorCode.NOT_FOUND
         retryable = False
     elif code_value.upper() in {"UNAUTHORIZED", "UNAUTHENTICATED"}:
@@ -284,6 +284,12 @@ async def request_json(
             return body, None
 
         upstream_code = body.get("code")
+        if (
+            not_found_ok
+            and upstream_code is not None
+            and str(upstream_code) == "602"
+        ):
+            return None, None
         if upstream_code is not None and str(upstream_code) != "200":
             return None, _business_error(
                 body=body,

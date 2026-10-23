@@ -132,3 +132,38 @@ async def test_collect_rejects_ambiguous_part():
         await provider.collect(make_request())
 
     assert exc_info.value.code == "PART_AMBIGUOUS"
+
+
+@pytest.mark.anyio
+async def test_collect_unwraps_langchain_mcp_content_blocks():
+    import json
+
+    tools = make_tools()
+    tools["part_search"] = FakeTool(
+        [
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "ok": True,
+                        "data": [
+                            {
+                                "id": 1,
+                                "name": "活塞环组件",
+                                "partCode": "PC2001",
+                                "purchasePrice": 100,
+                                "supplierId": 4,
+                            }
+                        ],
+                        "error": None,
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        ]
+    )
+    provider = McpProcurementDataProvider(tools, active_supplier_statuses={1})
+
+    candidates = await provider.collect(make_request())
+
+    assert candidates.offers[0].supplier_id == 4

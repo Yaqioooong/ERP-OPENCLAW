@@ -131,6 +131,17 @@ class McpErpOrderGateway:
         if hasattr(result, "model_dump"):
             result = result.model_dump(mode="json")
 
+        if isinstance(result, list):
+            texts = [
+                item.get("text")
+                for item in result
+                if isinstance(item, dict)
+                and item.get("type") == "text"
+                and isinstance(item.get("text"), str)
+            ]
+            if texts:
+                result = "\n".join(texts)
+
         if isinstance(result, str):
             text = result.strip()
             if not text or text.startswith("没有查询到"):
@@ -209,8 +220,16 @@ class McpErpOrderGateway:
         if not isinstance(result, dict):
             raise GatewayUnavailable(f"订单响应不是对象: {result!r}")
 
-        order_id = result.get("orderId") or result.get("id")
-        order_number = result.get("orderNumber") or fallback_number
+        order_id = (
+            result.get("orderId")
+            or result.get("order_id")
+            or result.get("id")
+        )
+        order_number = (
+            result.get("orderNumber")
+            or result.get("order_number")
+            or fallback_number
+        )
         if order_id is None or order_number is None:
             raise GatewayUnavailable(
                 f"订单响应缺少 orderId/orderNumber: {result!r}"

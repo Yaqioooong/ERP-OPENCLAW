@@ -164,3 +164,34 @@ async def test_programming_error_is_internal_error():
     assert error.error.code == ToolErrorCode.INTERNAL_ERROR
     assert error.error.retryable is False
     assert error.error.details["exception_type"] == "ValueError"
+
+
+@pytest.mark.anyio
+async def test_erp_602_is_not_found():
+    async def handler(request):
+        return httpx.Response(
+            200,
+            json={"code": 602, "message": "数据不存在"},
+        )
+
+    async with make_client(handler) as client:
+        data, error = await request_json(
+            ctx=FakeContext(client),
+            tool="order_get_by_number",
+            method="GET",
+            path="/orders/get_by_number/missing",
+            not_found_ok=True,
+        )
+    assert data is None
+    assert error is None
+
+    async with make_client(handler) as client:
+        data, error = await request_json(
+            ctx=FakeContext(client),
+            tool="order_get_by_number",
+            method="GET",
+            path="/orders/get_by_number/missing",
+        )
+    assert data is None
+    assert error is not None
+    assert error.error.code == ToolErrorCode.NOT_FOUND

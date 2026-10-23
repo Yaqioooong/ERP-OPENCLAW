@@ -275,6 +275,11 @@ class OrderReconciler:
         if record.status == ExecutionStatus.SUCCEEDED:
             return VerificationResult(
                 outcome=VerificationOutcome.SUCCEEDED,
+                order=RemoteOrder(
+                    order_id=record.order_id or "",
+                    order_number=record.order_number or "",
+                    raw=record.response_payload or {},
+                ),
                 message="执行记录已成功。",
                 attempts=record.verification_attempts,
             )

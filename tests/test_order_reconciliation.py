@@ -215,3 +215,22 @@ async def test_worker_run_once_scans_unknown_records(db):
     assert stats.succeeded == 1
     record = await repository.get("KEY-1")
     assert record.status == ExecutionStatus.SUCCEEDED
+
+
+@pytest.mark.anyio
+async def test_already_succeeded_record_keeps_order_identity(db):
+    gateway = FakeGateway(None)
+    reconciler, repository = await make_reconciler(db, gateway)
+    await repository.mark_succeeded(
+        idempotency_key="KEY-1",
+        order_id="190",
+        order_number="P0BCF94565B4B2",
+        response={"orderId": 190},
+        now=NOW,
+    )
+
+    result = await reconciler.verify_by_task("TASK-1")
+
+    assert result.status == ExecutionStatus.SUCCEEDED
+    assert result.order_id == "190"
+    assert result.order_number == "P0BCF94565B4B2"

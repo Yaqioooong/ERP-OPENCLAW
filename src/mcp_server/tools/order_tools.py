@@ -177,18 +177,25 @@ async def get_order_by_number_core(order_number: str, ctx: Context):
         ctx=ctx,
         tool="order_get_by_number",
         method="GET",
-        path=f"/orders/get/{order_number}",
+        path=f"/orders/get_by_number/{order_number}",
         not_found_ok=True,
     )
     if error:
         return error
-    payload = None if data is None else normalize_order(data).model_dump(mode="json")
+    if data is None:
+        return success(
+            None,
+            tool="order_get_by_number",
+            ctx=ctx,
+            started=started,
+            upstream_code=404,
+        )
     return success(
-        payload,
+        normalize_order(data).model_dump(mode="json"),
         tool="order_get_by_number",
         ctx=ctx,
         started=started,
-        upstream_code=404 if data is None else 200,
+        upstream_code=200,
     )
 
 

@@ -98,9 +98,26 @@ def _parse_datetime(value: Any) -> datetime | None:
     return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
 
 
+def _unwrap_mcp_content(result: Any) -> Any:
+    """LangChain MCP adapter 可能返回 [{'type': 'text', 'text': ...}]。"""
+    if isinstance(result, list):
+        texts = [
+            item.get("text")
+            for item in result
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ]
+        if texts:
+            return "\n".join(texts)
+    return result
+
+
 def _normalize_result(result: Any) -> Any:
     if hasattr(result, "model_dump"):
         result = result.model_dump(mode="json")
+
+    result = _unwrap_mcp_content(result)
 
     if isinstance(result, str):
         text = result.strip()

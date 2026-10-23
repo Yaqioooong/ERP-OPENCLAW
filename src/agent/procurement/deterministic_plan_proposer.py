@@ -30,7 +30,7 @@ class DeterministicPlanProposer:
             if any(part_id not in offers for part_id, _ in requested):
                 continue
             chosen = [offers[part_id] for part_id, _ in requested]
-            if any(o.unit_price is None for o in offers):
+            if any(o.unit_price is None for o in chosen):
                 continue
             total_price = sum(
                 q2(o.unit_price) * qty for o, (_, qty) in zip(chosen, requested)
