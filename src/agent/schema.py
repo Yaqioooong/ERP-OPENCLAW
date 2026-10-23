@@ -18,6 +18,7 @@ class ProcurementContext:
     """
     user_id: str                # 必填，用户唯一标识
     username: str               # 必填，用户姓名/登录名
+    roles: tuple[str, ...] = () # 审批角色：requester / approver / admin
 
 
 @dataclass

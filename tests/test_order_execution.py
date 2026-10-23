@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -52,7 +52,7 @@ class FakeGateway:
         return self.by_id.get(str(order_id))
 
 
-async def make_service(db, gateway):
+async def make_service(db, gateway, *, expires_at=NOW):
     approvals = PostgresApprovalRepository(db)
     executions = PostgresExecutionRepository(db)
     await executions.setup()
@@ -66,7 +66,7 @@ async def make_service(db, gateway):
         status=ApprovalStatus.PENDING,
         requested_by="u1",
         created_at=NOW,
-        expires_at=NOW,
+        expires_at=expires_at,
     )
     await approvals.ensure_pending(approval)
     await approvals.decide(
@@ -186,3 +186,22 @@ def make_order_number_for(plan: ProcurementPlan) -> str:
         plan_version=plan.version,
         plan_hash=compute_plan_hash(plan),
     )
+
+@pytest.mark.anyio
+async def test_expired_approval_cannot_create_order(db):
+    gateway = FakeGateway()
+    service, plan, _, _ = await make_service(
+        db, gateway, expires_at=NOW - timedelta(seconds=1)
+    )
+    key = make_idempotency_key("TASK-1", plan.version, compute_plan_hash(plan))
+
+    result = await service.create_order(
+        task_id="TASK-1",
+        plan=plan,
+        approval_id="APR-1",
+        idempotency_key=key,
+    )
+
+    assert result.status == ExecutionStatus.FAILED
+    assert result.error.code == "APPROVAL_EXPIRED"
+    assert gateway.created == []

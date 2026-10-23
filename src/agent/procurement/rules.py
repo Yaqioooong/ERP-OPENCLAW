@@ -1,6 +1,6 @@
 import hashlib
 import json
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
 from agent.procurement.config import PROCUREMENT_MAX_QUANTITY, PROCUREMENT_ACTIVE_SUPPLIER_STATUSES
@@ -442,7 +442,11 @@ def make_approval_id(task_id: str, plan_version: int, plan_hash: str) -> str:
 # 5. 执行前守卫
 # ============================================================
 
-def execution_guard_errors(state: dict) -> list[str]:
+def execution_guard_errors(
+        state: dict,
+        *,
+        now: datetime | None = None,
+) -> list[str]:
     """在真正调用订单服务前再次校验审批有效性。
 
     关键：重新从 procurement_plan 计算哈希，不能只信 state 里缓存的 plan_hash。
@@ -450,6 +454,17 @@ def execution_guard_errors(state: dict) -> list[str]:
     errors: list[str] = []
     if state.get("approval_status") != "approved":
         errors.append("APPROVAL_NOT_APPROVED")
+    if not state.get("approved_by"):
+        errors.append("APPROVAL_APPROVER_MISSING")
+
+    expires_raw = state.get("approval_expires_at")
+    if expires_raw:
+        try:
+            expires_at = datetime.fromisoformat(expires_raw)
+            if now is not None and expires_at <= now:
+                errors.append("APPROVAL_EXPIRED")
+        except ValueError:
+            errors.append("APPROVAL_EXPIRY_INVALID")
 
     raw_plan = state.get("procurement_plan")
     if not raw_plan:

@@ -58,6 +58,7 @@ class ApprovalRepository(Protocol):
             decided_by: str,
             decision: str,
             comment: str | None,
+            decided_by_roles: list[str] | None = None,
     ) -> ApprovalDecisionResult:
         ...
 

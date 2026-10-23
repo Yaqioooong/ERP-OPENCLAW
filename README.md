@@ -107,6 +107,8 @@ LANGSMITH_PROJECT=...
 
 - `REDIS_URL`：默认 `redis://127.0.0.1:6379/0`。
 - `PROCUREMENT_DATABASE_URL`：默认 `postgresql:///erp_openclaw`。
+- `PROCUREMENT_REQUIRE_DISTINCT_APPROVER=true`：要求审批人与申请人不同（默认 `false`）。
+- 采购 API 角色头：`X-User-Id`、`X-Username`、`X-Roles`（如 `requester` / `approver` / `admin`，逗号分隔）。
 - `PROCUREMENT_TEST_DATABASE_URL`：测试库，默认 `postgresql:///erp_openclaw_test`。
 - `APP_ENV=production`：日志写入 `erp_agent.log`，否则输出到控制台。
 

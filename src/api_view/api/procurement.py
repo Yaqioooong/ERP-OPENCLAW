@@ -27,11 +27,17 @@ class ResolveExecutionRequest(BaseModel):
 
 def get_current_user(
         x_user_id: str | None = Header(default=None, alias="X-User-Id"),
-        x_username: str | None = Header(default=None, alias="X-Username")
-) -> tuple[str, str]:
+        x_username: str | None = Header(default=None, alias="X-Username"),
+        x_roles: str | None = Header(default=None, alias="X-Roles"),
+) -> tuple[str, str, tuple[str, ...]]:
     # 开发占位：生产替换为 JWT/Session 认证
     user_id = x_user_id or "guoyaxing"
-    return user_id, x_username or user_id
+    roles = tuple(
+        role.strip()
+        for role in (x_roles or "requester").split(",")
+        if role.strip()
+    )
+    return user_id, x_username or user_id, roles
 
 
 @router.post("/procurement/tasks")
@@ -44,6 +50,7 @@ async def start_task(request: StartTaskRequest, user=Depends(get_current_user)):
             username=user[1],
             conversation_id=request.conversation_id,
             request=request.request,
+            roles=user[2],
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -62,6 +69,7 @@ async def resume_task(
             user_id=user[0],
             username=user[1],
             resume_data=request.resume,
+            roles=user[2],
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -75,7 +83,9 @@ async def resume_task(
 async def get_task(task_id: str, user=Depends(get_current_user)):
     try:
         runner = await get_task_runner()
-        return await runner.get(task_id=task_id, user_id=user[0])
+        return await runner.get(
+            task_id=task_id, user_id=user[0], roles=user[2]
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except RuntimeError as exc:

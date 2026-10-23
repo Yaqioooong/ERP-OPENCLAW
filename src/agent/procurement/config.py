@@ -25,6 +25,11 @@ PROCUREMENT_MAX_PLAN_REVISIONS = int(os.getenv("PROCUREMENT_MAX_PLAN_REVISIONS",
 # 审批有效期
 PROCUREMENT_APPROVAL_TTL_MINUTES = int(os.getenv("PROCUREMENT_APPROVAL_TTL_MINUTES", "30"))
 
+# 审批人与申请人是否必须是不同的人；默认 false 兼容本地单用户演示。
+PROCUREMENT_REQUIRE_DISTINCT_APPROVER = (
+    os.getenv("PROCUREMENT_REQUIRE_DISTINCT_APPROVER", "false").lower() == "true"
+)
+
 # 真实订单执行开关，本步默认false：图会停在approved_pending_execution
 PROCUREMENT_EXECUTION_ENABLED = (os.getenv("PROCUREMENT_EXECUTION_ENABLED", "false").lower() == "true")
 

@@ -27,8 +27,12 @@ TZ = ZoneInfo("Asia/Shanghai")
 FIXED_NOW = datetime(2026, 10, 21, 10, 0, tzinfo=TZ)
 
 
-def make_context(user_id: str = "u1", username: str = "张三") -> ProcurementContext:
-    return ProcurementContext(user_id=user_id, username=username)
+def make_context(
+    user_id: str = "u1",
+    username: str = "张三",
+    roles: tuple[str, ...] = ("requester",),
+) -> ProcurementContext:
+    return ProcurementContext(user_id=user_id, username=username, roles=roles)
 
 
 def make_config(task_id: str = "TASK-1") -> dict:
@@ -161,6 +165,7 @@ def make_test_deps(
         data_provider=None,
         proposer=None,
         execution_enabled: bool = False,
+        require_distinct_approver: bool = False,
 ) -> ProcurementDependencies:
     return ProcurementDependencies(
         request_parser=parser or StaticRequestParser(),
@@ -171,4 +176,5 @@ def make_test_deps(
         order_executor=order_executor,
         now=lambda: FIXED_NOW,
         execution_enabled=execution_enabled,
+        require_distinct_approver=require_distinct_approver,
     )

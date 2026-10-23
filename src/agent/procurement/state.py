@@ -44,6 +44,7 @@ class ProcurementState(TypedDict, total=False):
     approved_plan_hash: str | None
     approved_by: str | None
     approved_at: str | None
+    approval_expires_at: str | None
 
     # ---- 执行 ----
     idempotency_key: str | None
@@ -107,6 +108,7 @@ def initial_state(
         "approved_plan_hash": None,
         "approved_by": None,
         "approved_at": None,
+        "approval_expires_at": None,
         "idempotency_key": None,
         "order_id": None,
         "execution_status": ExecutionStatus.NOT_STARTED.value,

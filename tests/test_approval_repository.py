@@ -53,3 +53,26 @@ async def test_decide_cannot_reuse_approved_record(db):
     assert await repo.decide(**approve_kwargs) == ApprovalDecisionResult.APPLIED
     assert await repo.decide(**reject_kwargs) == ApprovalDecisionResult.STALE
     assert await repo.decide(**approve_kwargs) == ApprovalDecisionResult.ALREADY_APPLIED
+
+@pytest.mark.anyio
+async def test_rejected_approval_can_be_reprepared(db):
+    repo = PostgresApprovalRepository(db)
+    record = make_record()
+    await repo.ensure_pending(record)
+    await repo.decide(
+        approval_id=record.approval_id,
+        task_id=record.task_id,
+        plan_version=record.plan_version,
+        plan_hash=record.plan_hash,
+        status="rejected",
+        decided_by="u1",
+        decision="reject",
+        comment="先不买",
+    )
+    assert (await repo.get(record.approval_id)).status == ApprovalStatus.REJECTED
+
+    await repo.ensure_pending(record)
+    reloaded = await repo.get(record.approval_id)
+    assert reloaded.status == ApprovalStatus.PENDING
+    assert reloaded.decision is None
+    assert reloaded.approved_by is None

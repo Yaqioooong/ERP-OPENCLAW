@@ -1,6 +1,7 @@
 """PostgreSQL 审批记录仓储。"""
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
 from agent.procurement.database import Database
@@ -20,6 +21,8 @@ CREATE TABLE IF NOT EXISTS procurement_approval (
     created_at    TIMESTAMPTZ NOT NULL,
     decided_at    TIMESTAMPTZ,
     expires_at    TIMESTAMPTZ,
+    plan_snapshot JSONB,
+    approved_by_roles TEXT[],
     UNIQUE (task_id, plan_version, plan_hash)
 );
 
@@ -35,6 +38,14 @@ class PostgresApprovalRepository:
     async def setup(self) -> None:
         async with self._database.acquire() as conn:
             await conn.execute(_SCHEMA)
+            await conn.execute(
+                "ALTER TABLE procurement_approval "
+                "ADD COLUMN IF NOT EXISTS plan_snapshot JSONB"
+            )
+            await conn.execute(
+                "ALTER TABLE procurement_approval "
+                "ADD COLUMN IF NOT EXISTS approved_by_roles TEXT[]"
+            )
 
     async def ensure_pending(self, record: ApprovalRecord) -> None:
         await self.setup()
@@ -44,9 +55,29 @@ class PostgresApprovalRepository:
                 INSERT INTO procurement_approval (
                     approval_id, task_id, plan_version, plan_hash, status,
                     requested_by, approved_by, decision, comment,
-                    created_at, decided_at, expires_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, NULL, $8)
-                ON CONFLICT (approval_id) DO NOTHING
+                    created_at, decided_at, expires_at, plan_snapshot,
+                    approved_by_roles
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, NULL, NULL, NULL, $7, NULL, $8,
+                    $9::jsonb, NULL
+                )
+                ON CONFLICT (approval_id) DO UPDATE
+                   SET status = 'pending',
+                       requested_by = EXCLUDED.requested_by,
+                       created_at = EXCLUDED.created_at,
+                       expires_at = EXCLUDED.expires_at,
+                       plan_snapshot = EXCLUDED.plan_snapshot,
+                       approved_by = NULL,
+                       approved_by_roles = NULL,
+                       decision = NULL,
+                       comment = NULL,
+                       decided_at = NULL
+                 WHERE procurement_approval.status IN ('rejected', 'stale')
+                    OR (
+                        procurement_approval.status = 'pending'
+                        AND procurement_approval.expires_at IS NOT NULL
+                        AND procurement_approval.expires_at < EXCLUDED.created_at
+                    )
                 """,
                 record.approval_id,
                 record.task_id,
@@ -56,6 +87,7 @@ class PostgresApprovalRepository:
                 record.requested_by,
                 record.created_at,
                 record.expires_at,
+                _json(record.plan_snapshot),
             )
 
     async def decide(
@@ -69,6 +101,7 @@ class PostgresApprovalRepository:
         decided_by: str,
         decision: str,
         comment: str | None,
+        decided_by_roles: list[str] | None = None,
     ) -> ApprovalDecisionResult:
         await self.setup()
         async with self._database.acquire() as conn:
@@ -79,11 +112,12 @@ class PostgresApprovalRepository:
                        approved_by = $2,
                        decision = $3,
                        comment = $4,
-                       decided_at = $5
-                 WHERE approval_id = $6
-                   AND task_id = $7
-                   AND plan_version = $8
-                   AND plan_hash = $9
+                       decided_at = $5,
+                       approved_by_roles = $6
+                 WHERE approval_id = $7
+                   AND task_id = $8
+                   AND plan_version = $9
+                   AND plan_hash = $10
                    AND status = 'pending'
                 """,
                 status,
@@ -91,6 +125,7 @@ class PostgresApprovalRepository:
                 decision,
                 comment,
                 datetime.now().astimezone(),
+                decided_by_roles or [],
                 approval_id,
                 task_id,
                 plan_version,
@@ -122,4 +157,23 @@ class PostgresApprovalRepository:
             )
         if row is None:
             return None
-        return ApprovalRecord(**dict(row))
+        data = dict(row)
+        data["approved_by_roles"] = data.get("approved_by_roles") or []
+        data["plan_snapshot"] = _load_json(data.get("plan_snapshot"))
+        return ApprovalRecord(**data)
+
+
+def _json(value: dict | None) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _load_json(value):
+    if value is None or isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else None
+    except (TypeError, json.JSONDecodeError):
+        return None

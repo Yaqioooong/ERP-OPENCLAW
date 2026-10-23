@@ -48,6 +48,11 @@ async def test_approval_is_required_before_order(db, config, ctx):
     assert len(fake.create_calls) == 1
     assert second["status"] == "completed"
     assert second["order_id"] == "PO-TEST-001"
+    approval = await deps.approval_repository.get(second["approval_id"])
+    assert approval is not None
+    assert approval.approved_by == "u1"
+    assert approval.plan_snapshot is not None
+    assert approval.approved_by_roles == ["requester"]
 
 
 @pytest.mark.anyio
@@ -164,6 +169,58 @@ async def test_resume_with_different_user_is_forbidden(db, config):
         config,
         context=intruder,
     )
+    assert result["status"] == "failed"
+    assert result["last_error"]["code"] == "FORBIDDEN"
+    assert fake.create_calls == []
+
+@pytest.mark.anyio
+async def test_approver_role_can_approve_other_users_task(db, config):
+    fake = FakeOrderExecutor(success=True)
+    deps = make_test_deps(
+        fake,
+        database=db,
+        execution_enabled=True,
+    )
+    graph = compile_procurement_graph(deps, MemorySaver())
+
+    owner = make_context("u1")
+    approver = make_context("u2", roles=("approver",))
+
+    await graph.ainvoke(make_state(), config, context=owner)
+    result = await graph.ainvoke(
+        Command(resume={"decision": "approve"}),
+        config,
+        context=approver,
+    )
+
+    assert result["status"] == "completed"
+    assert result["approved_by"] == "u2"
+    assert len(fake.create_calls) == 1
+    approval = await deps.approval_repository.get(result["approval_id"])
+    assert approval is not None
+    assert approval.approved_by == "u2"
+    assert approval.approved_by_roles == ["approver"]
+
+
+@pytest.mark.anyio
+async def test_distinct_approver_policy_rejects_self_approval(db, config):
+    fake = FakeOrderExecutor(success=True)
+    deps = make_test_deps(
+        fake,
+        database=db,
+        execution_enabled=True,
+        require_distinct_approver=True,
+    )
+    graph = compile_procurement_graph(deps, MemorySaver())
+
+    ctx = make_context("u1")
+    await graph.ainvoke(make_state(), config, context=ctx)
+    result = await graph.ainvoke(
+        Command(resume={"decision": "approve"}),
+        config,
+        context=ctx,
+    )
+
     assert result["status"] == "failed"
     assert result["last_error"]["code"] == "FORBIDDEN"
     assert fake.create_calls == []

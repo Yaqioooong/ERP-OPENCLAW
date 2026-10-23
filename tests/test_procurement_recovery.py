@@ -433,3 +433,27 @@ async def test_create_timeout_is_verified_not_retried(db):
     assert result.status == "completed"
     assert executor.create_calls == 1
     assert executor.verify_calls == 1
+
+
+@pytest.mark.anyio
+async def test_approver_role_can_resume_other_users_task(db):
+    fake = FakeOrderExecutor(success=True)
+    deps = make_test_deps(fake, database=db)
+    runner, _ = await make_runner(deps, db, MemorySaver())
+
+    started = await runner.start(
+        raw_request="为华东仓补充 200 个活塞环组件",
+        user_id="u1",
+        username="张三",
+    )
+    resumed = await runner.resume(
+        task_id=started.task_id,
+        user_id="u2",
+        username="审批人",
+        roles=("approver",),
+        resume_data={"decision": "approve"},
+    )
+
+    assert resumed.status == "completed"
+    assert resumed.state_summary["approval_status"] == "approved"
+    assert len(fake.create_calls) == 1

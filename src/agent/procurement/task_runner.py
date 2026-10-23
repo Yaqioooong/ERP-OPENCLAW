@@ -38,24 +38,25 @@ class TaskCheckpointMissing(RuntimeError):
 
 class ProcurementTaskRunner:
     def __init__(
-        self,
-        *,
-        graph,
-        task_repository: TaskRepository,
-        now: Callable[[], datetime] = utc_now_in_business_tz,
+            self,
+            *,
+            graph,
+            task_repository: TaskRepository,
+            now: Callable[[], datetime] = utc_now_in_business_tz,
     ):
         self._graph = graph
         self._tasks = task_repository
         self._now = now
 
     async def start(
-        self,
-        *,
-        raw_request: str,
-        user_id: str,
-        username: str,
-        conversation_id: str | None = None,
-        request: dict | None = None,
+            self,
+            *,
+            raw_request: str,
+            user_id: str,
+            username: str,
+            conversation_id: str | None = None,
+            request: dict | None = None,
+            roles: tuple[str, ...] = (),
     ) -> TaskRunResult:
         now = self._now()
         task_id = new_task_id(now)
@@ -74,7 +75,9 @@ class ProcurementTaskRunner:
         )
 
         config = {"configurable": {"thread_id": thread_id}}
-        context = ProcurementContext(user_id=user_id, username=username)
+        context = ProcurementContext(
+            user_id=user_id, username=username, roles=roles
+        )
         state = initial_state(
             task_id=task_id,
             raw_request=raw_request,
@@ -99,19 +102,39 @@ class ProcurementTaskRunner:
         return await self._snapshot(task_id, config, context)
 
     async def resume(
-        self,
-        *,
-        task_id: str,
-        user_id: str,
-        username: str,
-        resume_data: dict,
+            self,
+            *,
+            task_id: str,
+            user_id: str,
+            username: str,
+            resume_data: dict,
+            roles: tuple[str, ...] = (),
     ) -> TaskRunResult:
         record = await self._tasks.get(task_id)
-        if record is None or record.user_id != user_id:
+        if record is None:
+            raise PermissionError("TASK_NOT_FOUND_OR_FORBIDDEN")
+
+        is_owner = record.user_id == user_id
+        # 【python小课堂】判断 roles 中是否包含 "approver" 或 "admin" 中的任意一个角色，如果有，is_approver 为 True，否则为 False。
+        is_approver = bool(set(roles) & {"approver", "admin"})
+        approver_statuses = {
+            TaskStatus.AWAITING_APPROVAL.value,
+            TaskStatus.APPROVED.value,
+            TaskStatus.APPROVED_PENDING_EXECUTION.value,
+            TaskStatus.AWAITING_RETRY.value,
+            TaskStatus.VERIFYING.value,
+            TaskStatus.EXECUTING.value,
+        }
+        if not (
+                is_owner
+                or (is_approver and record.status in approver_statuses)
+        ):
             raise PermissionError("TASK_NOT_FOUND_OR_FORBIDDEN")
 
         config = {"configurable": {"thread_id": record.thread_id}}
-        context = ProcurementContext(user_id=user_id, username=username)
+        context = ProcurementContext(
+            user_id=user_id, username=username, roles=roles
+        )
         snapshot = await self._graph.aget_state(config)
 
         if not snapshot.values:
@@ -139,14 +162,24 @@ class ProcurementTaskRunner:
     async def get_record(self, task_id: str):
         return await self._tasks.get(task_id)
 
-    async def get(self, *, task_id: str, user_id: str) -> TaskRunResult:
+    async def get(
+            self,
+            *,
+            task_id: str,
+            user_id: str,
+            roles: tuple[str, ...] = (),
+    ) -> TaskRunResult:
         record = await self._tasks.get(task_id)
-        if record is None or record.user_id != user_id:
+        if record is None:
+            raise PermissionError("TASK_NOT_FOUND_OR_FORBIDDEN")
+        if record.user_id != user_id and not (set(roles) & {"approver", "admin"}):
             raise PermissionError("TASK_NOT_FOUND_OR_FORBIDDEN")
         return await self._snapshot(
             task_id,
             {"configurable": {"thread_id": record.thread_id}},
-            ProcurementContext(user_id=user_id, username=user_id),
+            ProcurementContext(
+                user_id=user_id, username=user_id, roles=roles
+            ),
         )
 
     async def reconcile(self, *, limit: int = 200) -> int:
@@ -208,6 +241,8 @@ class ProcurementTaskRunner:
             state_summary={
                 "plan_version": values.get("plan_version"),
                 "approval_status": values.get("approval_status"),
+                "approved_by": values.get("approved_by"),
+                "approval_expires_at": values.get("approval_expires_at"),
                 "execution_status": values.get("execution_status"),
                 "order_id": values.get("order_id"),
                 "requires_manual_review": values.get(

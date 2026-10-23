@@ -83,3 +83,27 @@ def test_execution_guard_detects_plan_hash_tampering():
     assert "PLAN_HASH_INCONSISTENT" in errors
     assert "APPROVAL_PLAN_HASH_STALE" in errors
     assert "APPROVED_PLAN_HASH_STALE" in errors
+
+
+def test_execution_guard_rejects_expired_or_missing_approver():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    plan = make_plan()
+    plan_hash = compute_plan_hash(plan)
+    state = {
+        "approval_status": "approved",
+        "approved_by": None,
+        "approval_expires_at": "2026-10-21T09:00:00+08:00",
+        "procurement_plan": plan.model_dump(mode="json"),
+        "plan_version": 1,
+        "plan_hash": plan_hash,
+        "approval_plan_version": 1,
+        "approval_plan_hash": plan_hash,
+        "approved_plan_version": 1,
+        "approved_plan_hash": plan_hash,
+    }
+    now = datetime(2026, 10, 21, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    errors = execution_guard_errors(state, now=now)
+    assert "APPROVAL_APPROVER_MISSING" in errors
+    assert "APPROVAL_EXPIRED" in errors

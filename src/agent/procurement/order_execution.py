@@ -305,6 +305,10 @@ class SafeOrderExecutionService:
             return self._failed("APPROVAL_NOT_FOUND", "找不到审批记录。")
         if approval.status != ApprovalStatus.APPROVED:
             return self._failed("APPROVAL_NOT_APPROVED", "方案尚未批准。")
+        if not approval.approved_by:
+            return self._failed("APPROVAL_APPROVER_MISSING", "审批记录缺少审批人。")
+        if approval.expires_at and self._now() > approval.expires_at:
+            return self._failed("APPROVAL_EXPIRED", "审批已过期，不能执行。")
         if approval.task_id != task_id:
             return self._failed("APPROVAL_TASK_MISMATCH", "审批记录不属于当前任务。")
         if approval.plan_version != plan.version:

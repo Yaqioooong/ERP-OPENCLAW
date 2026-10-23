@@ -21,6 +21,36 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         context = runtime.context
         return bool(context and context.user_id and context.user_id == state.get("user_id"))
 
+    def _roles(runtime: Runtime[ProcurementContext]) -> set[str]:
+        context = runtime.context
+        return set(context.roles) if context and context.roles else set()
+
+    def _can_request_approval(
+            state: ProcurementState,
+            runtime: Runtime[ProcurementContext],
+    ) -> bool:
+        """发起/重放审批 interrupt：owner 或审批角色都可以看到审批界面。"""
+        return _owner_ok(state, runtime) or bool(
+            _roles(runtime) & {"approver", "admin"}
+        )
+
+    def _can_execute(
+            state: ProcurementState,
+            runtime: Runtime[ProcurementContext],
+    ) -> bool:
+        """执行/核验：申请人、实际审批人，或 admin。
+
+        允许审批人继续跑 create_order/verify_order，但不能操作无关任务。
+        """
+        context = runtime.context
+        if not context or not context.user_id:
+            return False
+        if context.user_id == state.get("user_id"):
+            return True
+        if context.user_id == state.get("approved_by"):
+            return True
+        return "admin" in _roles(runtime)
+
     def _failed(code: str, message: str, **extra) -> dict:
         # 【python小课堂】**extra 是 Python 函数定义中的可变关键字参数（variadic keyword arguments），含义是：调用这个函数时，可以额外传入任意数量的"键=值"形式的参数，它们会被收集到一个名为 extra 的字典里。
         return {
@@ -289,6 +319,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
 
         approval_id = make_approval_id(state["task_id"], plan.version, actual_hash)
         now = deps.now()
+        expires_at = now + deps.approval_ttl
         try:
             await deps.approval_repository.ensure_pending(
                 ApprovalRecord(
@@ -299,7 +330,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                     status=ApprovalStatus.PENDING,
                     requested_by=state["user_id"],
                     created_at=now,
-                    expires_at=now + deps.approval_ttl,
+                    expires_at=expires_at,
+                    plan_snapshot=plan.model_dump(mode="json"),
                 )
             )
         except Exception as exc:
@@ -311,6 +343,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "approval_plan_hash": actual_hash,
             "approval_plan_snapshot": plan.model_dump(mode="json"),
             "approval_status": ApprovalStatus.PENDING.value,
+            "approval_expires_at": (now + deps.approval_ttl).isoformat(),
             "status": TaskStatus.AWAITING_APPROVAL.value,
             "node_history": ["prepare_approval"],
             "updated_at": deps.now().isoformat(),
@@ -320,8 +353,9 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
     # request_approval：只 interrupt，不写库、不重算 ID
     # --------------------------------------------------------
     async def request_approval(state, runtime):
-        if not _owner_ok(state, runtime):
-            return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
+        # 恢复时可能由审批人重放该 interrupt 节点；owner 也必须能看到审批界面。
+        if not _can_request_approval(state, runtime):
+            return _failed("FORBIDDEN", "当前用户无权审批该采购任务。")
 
         approval_id = state.get("approval_id")
         plan_version = state.get("approval_plan_version")
@@ -413,10 +447,20 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
     # finalize_approval：恢复后写最终决定；重新校验归属/版本/时效
     # --------------------------------------------------------
     async def finalize_approval(state, runtime):
-        if not _owner_ok(state, runtime):
-            return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
+        if not _can_request_approval(state, runtime):
+            return _failed("FORBIDDEN", "当前用户没有审批权限。")
 
         decision = ApprovalDecision.model_validate(state.get("approval_decision") or {})
+        if (
+                decision.decision == DecisionType.APPROVE
+                and deps.require_distinct_approver
+                and runtime.context.user_id == state.get("user_id")
+                and "admin" not in _roles(runtime)
+        ):
+            return _failed(
+                "FORBIDDEN",
+                "审批人与申请人不能相同，请由其他审批人处理。",
+            )
         approval_id = state.get("approval_id")
         approval_version = state.get("approval_plan_version")
         approval_hash = state.get("approval_plan_hash")
@@ -447,7 +491,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 plan_version=approval_version,
                 plan_hash=approval_hash,
                 status=ApprovalStatus.STALE.value,
-                decided_by=state["user_id"],
+                decided_by=runtime.context.user_id,
                 decision=DecisionType.REJECT.value,
                 comment="审批已过期",
             )
@@ -465,9 +509,10 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             plan_version=approval_version,
             plan_hash=approval_hash,
             status=target_status,
-            decided_by=state["user_id"],
+            decided_by=runtime.context.user_id,
             decision=decision.decision.value,
             comment=decision.comment,
+            decided_by_roles=sorted(_roles(runtime)),
         )
         if decision_result == ApprovalDecisionResult.STALE:
             return _failed("APPROVAL_STALE", "审批记录状态已变化，不能重复使用。")
@@ -519,8 +564,9 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "approval_status": ApprovalStatus.APPROVED.value,
             "approved_plan_version": approval_version,
             "approved_plan_hash": approval_hash,
-            "approved_by": state["user_id"],
+            "approved_by": runtime.context.user_id,
             "approved_at": now_iso,
+            "approval_expires_at": state.get("approval_expires_at"),
             "status": TaskStatus.APPROVED.value,
             "node_history": ["finalize_approval"],
             "updated_at": now_iso,
@@ -530,10 +576,10 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
     # create_order：默认关闭；真实执行在 deeper_3/4 接入
     # --------------------------------------------------------
     async def create_order(state, runtime):
-        if not _owner_ok(state, runtime):
-            return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
+        if not _can_execute(state, runtime):
+            return _failed("FORBIDDEN", "当前用户无权执行该采购任务。")
 
-        guard_errors = execution_guard_errors(state)
+        guard_errors = execution_guard_errors(state, now=deps.now())
         if guard_errors:
             return _failed(
                 "APPROVAL_NOT_CURRENT",
@@ -607,8 +653,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
     # verify_order
     # --------------------------------------------------------
     async def verify_order(state, runtime):
-        if not _owner_ok(state, runtime):
-            return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
+        if not _can_execute(state, runtime):
+            return _failed("FORBIDDEN", "当前用户无权核验该采购任务。")
 
         try:
             if deps.order_reconciler is not None:
@@ -732,8 +778,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
     # retry
     # --------------------------------------------------------
     async def retry_gate(state, runtime):
-        if not _owner_ok(state, runtime):
-            return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
+        if not _can_execute(state, runtime):
+            return _failed("FORBIDDEN", "当前用户无权恢复该采购任务。")
         payload = {
             "type": "procurement_retry_required",
             "task_id": state["task_id"],

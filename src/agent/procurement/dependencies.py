@@ -5,7 +5,7 @@ from typing import Protocol, Callable
 from agent.procurement.approval_repository import PostgresApprovalRepository
 from agent.procurement.config import PROCUREMENT_MAX_PLAN_REVISIONS, PROCUREMENT_MAX_CLARIFICATION_ROUNDS, \
     PROCUREMENT_APPROVAL_TTL_MINUTES, PROCUREMENT_ACTIVE_SUPPLIER_STATUSES, PROCUREMENT_DATABASE_URL, \
-    PROCUREMENT_EXECUTION_ENABLED, utc_now_in_business_tz
+    PROCUREMENT_EXECUTION_ENABLED, PROCUREMENT_REQUIRE_DISTINCT_APPROVER, utc_now_in_business_tz
 from agent.procurement.database import Database
 from agent.procurement.data_provider import McpProcurementDataProvider
 from agent.procurement.deterministic_plan_proposer import DeterministicPlanProposer
@@ -60,6 +60,7 @@ class ProcurementDependencies:
     execution_enabled: bool = False
     max_task_resumes: int = 3
     order_reconciler: OrderReconciler | None = None
+    require_distinct_approver: bool = PROCUREMENT_REQUIRE_DISTINCT_APPROVER
 
 
 async def get_database() -> Database:
@@ -113,6 +114,7 @@ async def build_production_dependencies() -> ProcurementDependencies:
         now=utc_now_in_business_tz,
         execution_enabled=PROCUREMENT_EXECUTION_ENABLED,
         order_reconciler=reconciler,
+        require_distinct_approver=PROCUREMENT_REQUIRE_DISTINCT_APPROVER,
     )
 
 

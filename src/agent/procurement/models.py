@@ -217,6 +217,8 @@ class ApprovalRecord(BaseModel):
     created_at: datetime
     decided_at: datetime | None = None
     expires_at: datetime | None = None
+    plan_snapshot: dict[str, Any] | None = None
+    approved_by_roles: list[str] = Field(default_factory=list)
 
 
 class ApprovalDecision(BaseModel):
