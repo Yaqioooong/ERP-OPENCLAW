@@ -1,83 +1,144 @@
 from fastmcp import FastMCP, Context
 
-from mcp_server.mcp_tools_bean import PartQueryInput, PartSearchInput
+from mcp_server.contracts import ToolErrorCode, normalize_part
+from mcp_server.mcp_tools_bean import PartQueryInput
+from mcp_server.tool_io import failure, request_json, success
 
-# 分组名称
-GROUP_NAME = "part"   # 分组名称，最终工具名称为 part_query / part_search
+GROUP_NAME = "part"
+
+
+async def search_parts_core(name: str, ctx: Context):
+    import time
+
+    started = time.monotonic()
+    data, error = await request_json(
+        ctx=ctx,
+        tool="part_search",
+        method="GET",
+        path="/parts/search",
+        params={"name": name},
+    )
+    if error:
+        return error
+    records = [
+        normalize_part(item).model_dump(mode="json")
+        for item in (data or [])
+        if isinstance(item, dict)
+    ]
+    return success(
+        records,
+        tool="part_search",
+        ctx=ctx,
+        started=started,
+        upstream_code=200,
+    )
+
+
+async def query_parts_core(params: PartQueryInput, ctx: Context):
+    import time
+
+    started = time.monotonic()
+    data, error = await request_json(
+        ctx=ctx,
+        tool="part_query",
+        method="GET",
+        path="/parts/page",
+        params=params.model_dump(exclude_none=True),
+    )
+    if error:
+        return error
+    raw_records = data.get("records", []) if isinstance(data, dict) else (data or [])
+    records = [
+        normalize_part(item).model_dump(mode="json")
+        for item in raw_records
+        if isinstance(item, dict)
+    ]
+    payload = {
+        "records": records,
+        "total": data.get("total") if isinstance(data, dict) else len(records),
+        "current": data.get("current") if isinstance(data, dict) else params.current,
+        "size": data.get("size") if isinstance(data, dict) else params.size,
+    }
+    return success(
+        payload,
+        tool="part_query",
+        ctx=ctx,
+        started=started,
+        upstream_code=200,
+    )
+
+
+async def get_part_core(part_id: int, ctx: Context):
+    import time
+
+    started = time.monotonic()
+    data, error = await request_json(
+        ctx=ctx,
+        tool="part_get",
+        method="GET",
+        path=f"/parts/get/{part_id}",
+        not_found_ok=False,
+    )
+    if error:
+        return error
+    if data is None:
+        return failure(
+            code=ToolErrorCode.NOT_FOUND,
+            message=f"零件不存在: {part_id}",
+            tool="part_get",
+            ctx=ctx,
+            started=started,
+            details={"part_id": part_id},
+            upstream_code=404,
+        )
+    return success(
+        normalize_part(data).model_dump(mode="json"),
+        tool="part_get",
+        ctx=ctx,
+        started=started,
+        upstream_code=200,
+    )
+
+
+async def list_parts_by_supplier_core(supplier_id: int, ctx: Context):
+    import time
+
+    started = time.monotonic()
+    data, error = await request_json(
+        ctx=ctx,
+        tool="part_by_supplier",
+        method="GET",
+        path=f"/parts/supplier/{supplier_id}",
+    )
+    if error:
+        return error
+    records = [
+        normalize_part(item).model_dump(mode="json")
+        for item in (data or [])
+        if isinstance(item, dict)
+    ]
+    return success(
+        records,
+        tool="part_by_supplier",
+        ctx=ctx,
+        started=started,
+        upstream_code=200,
+    )
+
+
 def register_parts_tools(mcp: FastMCP):
-    """注册零部件分组的所有工具"""
+    @mcp.tool(name=f"{GROUP_NAME}_search")
+    async def search_parts(name: str, ctx: Context):
+        return await search_parts_core(name, ctx)
 
     @mcp.tool(name=f"{GROUP_NAME}_query")
-    async def query_parts(params: PartQueryInput, ctx: Context) -> list:
-        """
-        分页查询零部件列表。
-        支持按名称模糊查询、按分类筛选、按供应商ID筛选。
+    async def query_parts(params: PartQueryInput, ctx: Context):
+        return await query_parts_core(params, ctx)
 
-        Args:
-            params: 查询参数对象，包含 current, size, name, category, supplierId
-        """
-        http_client = ctx.request_context.lifespan_context.get("http_client")
-
-        # 过滤掉 None 值参数
-        request_params = params.model_dump(exclude_none=True)
-
-        try:
-            response = await http_client.get("/parts/page", params=request_params)
-            response.raise_for_status()
-            result = response.json()
-
-            # 检查业务状态码
-            if result.get("code") != 200:
-                return [f"API error: code={result.get('code')}"]
-
-            # 返回 data 字段，通常包含 records, total, current, size 等
-            return result.get("data", {}).get("records", [])
-
-        except Exception as e:
-            return [f'没有查询到任何信息，而且报错: {e}']
-
-    @mcp.tool(name=f"{GROUP_NAME}_search")
-    async def search_parts(name: str, ctx: Context) -> list:
-        """
-        按名称搜索零部件。
-        与 part_query 不同，此接口直接搜索，name 为必填参数。
-
-        Args:
-            name: 零件名称（模糊查询），必填
-        """
-        http_client = ctx.request_context.lifespan_context.get("http_client")
-
-        try:
-            response = await http_client.get("/parts/search", params={"name": name})
-            response.raise_for_status()
-            result = response.json()
-
-            if result.get("code") != 200:
-                return [f"API error: code={result.get('code')}"]
-
-            # data 为数组
-            return result.get("data", [])
-        except Exception as e:
-            return [f'没有查询到任何信息，而且报错: {e}']
+    @mcp.tool(name=f"{GROUP_NAME}_get")
+    async def get_part(part_id: int, ctx: Context):
+        return await get_part_core(part_id, ctx)
 
     @mcp.tool(name=f"{GROUP_NAME}_by_supplier")
-    async def list_parts_by_supplier(supplier_id: int, ctx: Context) -> list:
-        """
-        根据供应商 ID 查询该供应商下有采购记录的零配件列表。
-
-        Args:
-            supplier_id: 供应商 ID（路径参数，必填）
-        """
-        http_client = ctx.request_context.lifespan_context.get("http_client")
-
-        try:
-            response = await http_client.get(f"/parts/supplier/{supplier_id}")
-            response.raise_for_status()
-            result = response.json()
-
-            if result.get("code") != 200:
-                return [f"API error: code={result.get('code')}"]
-
-            return result.get("data", [])
-        except Exception as e:
-            return [f'没有查询到任何信息，而且报错: {e}']
+    async def list_parts_by_supplier(supplier_id: int, ctx: Context):
+        return await list_parts_by_supplier_core(supplier_id, ctx)

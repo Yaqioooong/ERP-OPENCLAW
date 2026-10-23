@@ -38,9 +38,25 @@ class ErpOrderGateway(Protocol):
             idempotency_key: str
     ) -> GatewayOrder: ...
 
-    async def get_order_by_number(self, order_number: str) -> GatewayOrder | None: ...
+    async def get_order_by_number(self, order_number: str) -> GatewayOrder | None:
+        result = await self._call(
+            "order_get_by_number",
+            {"order_number": order_number},
+            allow_not_found=True,
+        )
+        if result is None:
+            return None
+        return self._extract_order(result, fallback_number=order_number)
 
-    async def get_order_by_id(self, order_id: str) -> GatewayOrder | None: ...
+    async def get_order_by_id(self, order_id: str) -> GatewayOrder | None:
+        result = await self._call(
+            "order_get",
+            {"order_id": int(order_id)},
+            allow_not_found=True,
+        )
+        if result is None:
+            return None
+        return self._extract_order(result, fallback_number=None)
 
 
 class McpErpOrderGateway:
@@ -95,7 +111,13 @@ class McpErpOrderGateway:
             return None
         return self._extract_order(result, fallback_number=None)
 
-    async def _call(self, name: str, payload: dict[str, Any]) -> Any:
+    async def _call(
+            self,
+            name: str,
+            payload: dict[str, Any],
+            *,
+            allow_not_found: bool = False,
+    ) -> Any:
         tool = self._tools.get(name)
         if tool is None:
             raise GatewayUnavailable(f"MCP 工具缺失: {name}")
@@ -106,6 +128,9 @@ class McpErpOrderGateway:
         except Exception as exc:
             raise GatewayUnavailable(str(exc)) from exc
 
+        if hasattr(result, "model_dump"):
+            result = result.model_dump(mode="json")
+
         if isinstance(result, str):
             text = result.strip()
             if not text or text.startswith("没有查询到"):
@@ -115,12 +140,37 @@ class McpErpOrderGateway:
             except json.JSONDecodeError as exc:
                 raise GatewayUnavailable(text) from exc
 
+        if isinstance(result, dict) and "ok" in result:
+            if result.get("ok") is True:
+                return result.get("data")
+            error = result.get("error") or {}
+            code = str(error.get("code") or "UPSTREAM_UNAVAILABLE")
+            details = error.get("details") or {}
+            message = str(error.get("message") or error)
+
+            if code == "NOT_FOUND" and allow_not_found:
+                return None
+            if code == "TIMEOUT":
+                raise GatewayTimeout(message)
+            if code in {"UPSTREAM_UNAVAILABLE", "RATE_LIMITED"}:
+                raise GatewayUnavailable(message)
+            if code == "CONFLICT":
+                raise GatewayBusinessError(
+                    message,
+                    code="ORDER_DUPLICATE",
+                    duplicate=True,
+                )
+            raise GatewayBusinessError(
+                message,
+                code=code,
+                duplicate=bool(details.get("duplicate")),
+            )
+
+        # 兼容旧 MCP 返回
         if isinstance(result, dict) and result.get("error") is not None:
             self._raise_business_error(result["error"])
-
         if isinstance(result, dict) and "data" in result:
             return result["data"]
-
         return result
 
     @staticmethod

@@ -1,62 +1,75 @@
-from fastmcp import FastMCP, Context
-from openai import http_client
+import time
 
+from fastmcp import FastMCP, Context
+
+from mcp_server.contracts import normalize_inventory
 from mcp_server.mcp_tools_bean import InventorySearchInput
+from mcp_server.tool_io import request_json, success
 
 GROUP_NAME = "inventory"
 
 
+async def list_inventory_warnings_core(ctx: Context):
+    started = time.monotonic()
+    data, error = await request_json(
+        ctx=ctx,
+        tool="inventory_warning",
+        method="GET",
+        path="/inventory/warning",
+    )
+    if error:
+        return error
+    records = [
+        normalize_inventory(item).model_dump(mode="json")
+        for item in (data or [])
+        if isinstance(item, dict)
+    ]
+    return success(
+        records,
+        tool="inventory_warning",
+        ctx=ctx,
+        started=started,
+        upstream_code=200,
+    )
+
+
+async def list_inventory_page_core(params: InventorySearchInput, ctx: Context):
+    started = time.monotonic()
+    data, error = await request_json(
+        ctx=ctx,
+        tool="inventory_page",
+        method="POST",
+        path="/inventory/page",
+        json_body=params.model_dump(exclude_none=True),
+    )
+    if error:
+        return error
+    raw_records = data.get("records", []) if isinstance(data, dict) else (data or [])
+    records = [
+        normalize_inventory(item).model_dump(mode="json")
+        for item in raw_records
+        if isinstance(item, dict)
+    ]
+    payload = {
+        "records": records,
+        "total": data.get("total") if isinstance(data, dict) else len(records),
+        "current": data.get("current") if isinstance(data, dict) else params.current,
+        "size": data.get("size") if isinstance(data, dict) else params.size,
+    }
+    return success(
+        payload,
+        tool="inventory_page",
+        ctx=ctx,
+        started=started,
+        upstream_code=200,
+    )
+
+
 def register_inventory_tools(mcp: FastMCP):
-    """注册库存管理分组的所有工具"""
-
     @mcp.tool(name=f"{GROUP_NAME}_warning")
-    async def list_inventory_warnings(ctx: Context) -> list:
-        """
-        查询库存预警列表。
-        返回所有库存不足（当前库存低于安全库存）的物料及对应的零部件详情。
-
-        无需传参。
-        """
-        http_client = ctx.request_context.lifespan_context.get("http_client")
-
-        try:
-            response = await http_client.get("/inventory/warning")
-            response.raise_for_status()
-            result = response.json()
-
-            if result.get("code") != 200:
-                return [f"API error: code={result.get('code')}"]
-
-            return result.get("data", [])
-        except Exception as e:
-            return [f'没有查询到任何信息，而且报错: {e}']
+    async def list_inventory_warnings(ctx: Context):
+        return await list_inventory_warnings_core(ctx)
 
     @mcp.tool(name=f"{GROUP_NAME}_page")
-    async def list_inventory_page(
-            params: InventorySearchInput, ctx: Context
-    ) -> list:
-        """
-        分页查询零件库存
-
-        Args:
-            param: 查询条件对象
-
-        Returns:
-            分页库存数据JSON, 包含currentQuantity,safeStock, warehouseLocation, partDetail
-        """
-        http_client = ctx.request_context.lifespan_context.get("http_client")
-        request_data = params.model_dump(exclude_none=True)
-
-        try:
-            print(request_data)
-            response = await http_client.post(
-                "/inventory/page",
-                json=request_data,
-            )
-            response.raise_for_status()
-            result = response.json()
-            if result.get("code") != 200:
-                return [f"API error: code={result.get('code')}, message={result.get('message')}"]
-            return result.get("data", [])
-        except Exception as e:
-            return [f'没有查询到任何信息，而且报错: {e}']
+    async def list_inventory_page(params: InventorySearchInput, ctx: Context):
+        return await list_inventory_page_core(params, ctx)

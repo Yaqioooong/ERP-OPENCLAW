@@ -99,11 +99,12 @@ def _parse_datetime(value: Any) -> datetime | None:
 
 
 def _normalize_result(result: Any) -> Any:
+    if hasattr(result, "model_dump"):
+        result = result.model_dump(mode="json")
+
     if isinstance(result, str):
         text = result.strip()
         if not text:
-            return []
-        if text.startswith("没有查询到"):
             return []
         try:
             result = json.loads(text)
@@ -112,6 +113,14 @@ def _normalize_result(result: Any) -> Any:
                 raise UpstreamUnavailable(text)
             return text
 
+    if isinstance(result, dict) and "ok" in result:
+        if result.get("ok") is True:
+            return result.get("data")
+        error = result.get("error") or {}
+        code = str(error.get("code") or "UPSTREAM_UNAVAILABLE")
+        message = str(error.get("message") or error)
+        raise UpstreamUnavailable(message, code=code)
+
     if isinstance(result, list):
         for item in result:
             if isinstance(item, str) and ("报错" in item or "API error" in item):
@@ -119,7 +128,13 @@ def _normalize_result(result: Any) -> Any:
         return result
 
     if isinstance(result, dict) and result.get("error"):
-        raise UpstreamUnavailable(str(result["error"]))
+        error = result["error"]
+        if isinstance(error, dict):
+            raise UpstreamUnavailable(
+                str(error.get("message") or error),
+                code=str(error.get("code") or "UPSTREAM_UNAVAILABLE"),
+            )
+        raise UpstreamUnavailable(str(error))
 
     return result
 
@@ -237,11 +252,11 @@ class McpProcurementDataProvider:
                 if str(p.get("code") or "").strip().lower() == code
             ]
         elif item.part_id is not None:
-            # 当前 MCP 没有 part_get(part_id)，不能凭 ID 猜物料信息。
-            raise UpstreamUnavailable(
-                "PART_DETAIL_UNAVAILABLE：当前工具不支持按 part_id 查询物料详情，请补充物料名称或编码。",
-                code="PART_DETAIL_UNAVAILABLE",
+            record = await self._call_tool(
+                "part_get", {"part_id": item.part_id}
             )
+            candidates = [_normalize_part(record)] if record else []
+            candidates = [p for p in candidates if p["id"] is not None]
         else:
             raise UpstreamUnavailable(
                 "PART_IDENTIFIER_MISSING：缺少物料名称、编码或 ID。",
@@ -456,3 +471,19 @@ class McpProcurementDataProvider:
                     f"{name} failed: {first}", code="UPSTREAM_UNAVAILABLE"
                 ) from first
         return _normalize_result(result)
+
+    async def _supplier_detail(self, supplier_id: int) -> dict[str, Any]:
+        try:
+            data = await self._call_tool(
+                "supplier_get", {"supplier_id": supplier_id}
+            )
+        except UpstreamUnavailable:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            "id": supplier_id,
+            "name": data.get("name") or f"SUP-{supplier_id}",
+            "status": data.get("status"),
+            "credit": data.get("credit_rating"),
+        }
