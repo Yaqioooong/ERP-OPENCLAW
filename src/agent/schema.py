@@ -9,38 +9,29 @@ from typing import Optional, List, Dict, Any
 
 from pydantic import Field, BaseModel
 
+from agent.memory.identity import MemoryIdentityError, validate_user_id
+from agent.memory.preferences import UserPreferences
+
 
 @dataclass
 class ProcurementContext:
     """
     运行时上下文，由调用方在 invoke 时传入。
     用于传递当前用户身份等基础信息。
+
+    user_id 必须来自服务端认证信息；缺失或非法时构造即失败，禁止默认用户回退。
     """
-    user_id: str                # 必填，用户唯一标识
+    user_id: str                # 必填，可信用户唯一标识
     username: str               # 必填，用户姓名/登录名
     roles: tuple[str, ...] = () # 审批角色：requester / approver / admin
+    request_id: str = ""        # 请求关联 ID（日志用）
+    thread_id: str = ""         # 会话关联 ID（日志用）
 
-
-@dataclass
-class UserPreferences:
-    """
-    用户偏好数据结构，存储在长期记忆文件中。
-    对应 /memories/{user_id}/preferences.md 的内容。
-    """
-    preferred_output: Optional[str] = None         # 'table' 或 'chart'
-    preferred_chart_type: Optional[str] = None      # 'bar', 'line', 'pie' 等
-    preferred_currency: Optional[str] = None        # 'CNY', 'USD' 等
-    preferred_language: Optional[str] = None        # 'zh', 'en' 等
-    recent_suppliers: list[str] = None              # 近期使用的供应商列表
-    recent_queries: list[str] = None                # 近期分析需求摘要列表
-
-    def __post_init__(self):
-        if self.recent_suppliers is None:
-            self.recent_suppliers = []
-        if self.recent_queries is None:
-            self.recent_queries = []
-
-
+    def __post_init__(self) -> None:
+        try:
+            validate_user_id(self.user_id)
+        except MemoryIdentityError as exc:
+            raise ValueError("user_id 缺失或格式非法，拒绝创建运行时上下文") from exc
 
 
 # ============================================================

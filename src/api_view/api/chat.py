@@ -13,7 +13,7 @@ import traceback
 from datetime import datetime
 from typing import AsyncIterator
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from langgraph.types import Command
 from pydantic import BaseModel
@@ -22,8 +22,16 @@ from agent.schema import (
     ChatRequest,
     ChatResponse,
     Message,
+    ProcurementContext,
 )
 from api_view.agent_loader import agent_loader
+from api_view.auth.permissions import require_password_ready
+from api_view.auth.models import AuthenticatedUser
+from api_view.thread_ownership import (
+    ThreadAccessError,
+    ThreadOwnershipUnavailable,
+    get_thread_ownership_store,
+)
 
 
 # 创建路由
@@ -229,6 +237,8 @@ async def stream_chat_response(
     message: str = None,
     thread_id: str = None,
     resume_data: dict = None,
+    *,
+    context: ProcurementContext,
 ) -> AsyncIterator[str]:
     """
     流式生成对话响应，支持 Human-in-the-Loop 中断与恢复。
@@ -241,8 +251,9 @@ async def stream_chat_response(
     流会发送 interrupt 事件后结束。前端收集用户决策后通过 /resume 端点恢复。
 
     同时累积完整的展示消息列表（包含子代理消息），在流结束后存入 Redis。
+
+    context 必须由服务端认证后的用户身份构造，禁止在此处生成或回退默认用户。
     """
-    context = {"user_id": "guoyaxing", "username": "guoyaxing"}
     config = agent_loader.create_config(thread_id)
     collected_content = ""
     # 工具调用栈，支持嵌套工具调用（主代理调 task → 子代理调 generate_chart）
@@ -276,6 +287,8 @@ async def stream_chat_response(
         write_debug_log(debug_log, "STREAM_START", {
             "message": message,
             "thread_id": thread_id,
+            "user_id": context.user_id,
+            "request_id": context.request_id,
             "is_resume": resume_data is not None,
         })
 
@@ -675,52 +688,121 @@ async def stream_chat_response(
 # API 端点
 # ============================================================
 
+_THREAD_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _normalize_thread_id(thread_id: str) -> str:
+    value = (thread_id or "").strip()
+    if not _THREAD_ID_PATTERN.fullmatch(value):
+        raise HTTPException(status_code=400, detail="非法的会话标识")
+    return value
+
+
+def _thread_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ThreadOwnershipUnavailable):
+        return HTTPException(status_code=503, detail="会话归属校验暂不可用")
+    return HTTPException(status_code=403, detail="无权访问该会话")
+
+
+def _verify_thread_access(thread_id: str, user_id: str) -> None:
+    try:
+        get_thread_ownership_store().verify(thread_id, user_id)
+    except (ThreadAccessError, ThreadOwnershipUnavailable) as exc:
+        raise _thread_http_error(exc) from exc
+
+
+def _claim_thread(thread_id: str, user_id: str) -> None:
+    try:
+        get_thread_ownership_store().claim(thread_id, user_id)
+    except (ThreadAccessError, ThreadOwnershipUnavailable) as exc:
+        raise _thread_http_error(exc) from exc
+
+
+def _build_context(user: AuthenticatedUser, thread_id: str) -> ProcurementContext:
+    return ProcurementContext(
+        user_id=user.user_id,
+        username=user.username,
+        roles=user.roles,
+        request_id=str(uuid.uuid4()),
+        thread_id=thread_id,
+    )
+
+
 @router.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
+async def chat_stream(
+    request: ChatRequest,
+    user: AuthenticatedUser = Depends(require_password_ready),
+):
     """
     流式对话接口
 
-    接收用户消息，返回 SSE 流式响应
-    支持实时显示 AI 生成的内容和工具调用信息
-    检测到 Human-in-the-Loop 中断时会发送 interrupt 事件
+    接收用户消息，返回 SSE 流式响应。身份来自服务端会话；新会话由服务端
+    生成 thread_id 并绑定当前用户，已有会话必须属于当前用户。
     """
-    thread_id = request.thread_id or str(uuid.uuid4())
+    if request.thread_id:
+        thread_id = _normalize_thread_id(request.thread_id)
+        _verify_thread_access(thread_id, user.user_id)
+    else:
+        thread_id = str(uuid.uuid4())
+        _claim_thread(thread_id, user.user_id)
 
+    context = _build_context(user, thread_id)
     return StreamingResponse(
-        stream_chat_response(message=request.message, thread_id=thread_id),
+        stream_chat_response(
+            message=request.message,
+            thread_id=thread_id,
+            context=context,
+        ),
         media_type="text/event-stream",  # text/json, text/html, image/jpg
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+            "X-Accel-Buffering": "no",
+            "X-Request-Id": context.request_id,
+        },
     )
 
 
 @router.post("/chat/{thread_id}/resume")
-async def chat_resume(thread_id: str, request: ResumeRequest):
+async def chat_resume(
+    thread_id: str,
+    request: ResumeRequest,
+    user: AuthenticatedUser = Depends(require_password_ready),
+):
     """
     中断恢复接口
 
     当中断发生后，前端收集用户决策/补充数据，通过此端点恢复 Agent 执行。
-    request.resume 的格式取决于中断类型：
-    - 数据补充: {"supplement": "用户输入的补充信息"}
-    - HITL 审批: {"decisions": [{"type": "approve"}]} 或 [{"type": "reject"}]
+    只允许会话归属者恢复；失败在建立 SSE 流之前返回 403。
     """
+    thread_id = _normalize_thread_id(thread_id)
+    _verify_thread_access(thread_id, user.user_id)
+    context = _build_context(user, thread_id)
+
     return StreamingResponse(
-        stream_chat_response(thread_id=thread_id, resume_data=request.resume),
+        stream_chat_response(
+            thread_id=thread_id,
+            resume_data=request.resume,
+            context=context,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Accel-Buffering": "no"
-        }
+            "X-Accel-Buffering": "no",
+            "X-Request-Id": context.request_id,
+        },
     )
 
 
 @router.get("/chat/{thread_id}")
-async def get_chat_state(thread_id: str):
-    """获取会话状态"""
+async def get_chat_state(
+    thread_id: str,
+    user: AuthenticatedUser = Depends(require_password_ready),
+):
+    """获取会话状态；仅会话归属者可读。"""
+    thread_id = _normalize_thread_id(thread_id)
+    _verify_thread_access(thread_id, user.user_id)
     try:
         messages = await agent_loader.get_current_messages(thread_id)
 
@@ -736,10 +818,7 @@ async def get_chat_state(thread_id: str):
             )
             message_list.append(message)
 
-        return ChatResponse(
-            thread_id=thread_id,
-            messages=message_list
-        )
+        return ChatResponse(thread_id=thread_id, messages=message_list)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -748,9 +827,12 @@ async def get_chat_state(thread_id: str):
 @router.get("/chat/{thread_id}/history")
 async def get_chat_history(
     thread_id: str,
-    limit: int = Query(50, ge=1, le=100)
+    limit: int = Query(50, ge=1, le=100),
+    user: AuthenticatedUser = Depends(require_password_ready),
 ):
-    """获取会话历史状态列表"""
+    """获取会话历史状态列表；仅会话归属者可读。"""
+    thread_id = _normalize_thread_id(thread_id)
+    _verify_thread_access(thread_id, user.user_id)
     try:
         states = await agent_loader.get_state_history(thread_id, limit)
 
@@ -761,10 +843,10 @@ async def get_chat_history(
                     "config": state.config,
                     "values": state.values,
                     "created_at": state.created_at,
-                    "parent_config": state.parent_config
+                    "parent_config": state.parent_config,
                 }
                 for state in states
-            ]
+            ],
         }
 
     except Exception as e:

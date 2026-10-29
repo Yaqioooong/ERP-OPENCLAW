@@ -19,13 +19,17 @@
 - 如果文件不存在（新用户首次使用）→ 使用 `write_file` 创建包含以下默认偏好的文件：
 
 ```yaml
-preferred_output: chart
-preferred_chart_type: bar
-preferred_currency: CNY
-preferred_language: zh
+schema_version: 1
+preferred_output: chart          # 只允许 table / chart
+preferred_chart_type: bar        # generate_visualization 支持的 26 种 chart_type
+preferred_currency: CNY          # CNY / USD / EUR / JPY / HKD / GBP
+preferred_language: zh           # zh / en
 recent_suppliers: []
 recent_queries: []
 ```
+
+> 偏好文件由 Pydantic 模型严格校验。不要写入未知字段，不要使用未列出的枚举值；
+> 非法文件不会被自动覆盖，自动更新只维护 `recent_suppliers` / `recent_queries`。
 
 - 将用户偏好应用到本次对话（输出格式、图表类型、货币单位等）
 
@@ -162,9 +166,10 @@ web_search(query="用户的问题关键词")
 
 ### 用户偏好文件格式
 ```yaml
+schema_version: 1
 preferred_output: table          # "table" 或 "chart"
-preferred_chart_type: bar        # "bar", "line", "pie", "radar"
-preferred_currency: CNY          # "CNY", "USD", "EUR"
+preferred_chart_type: bar        # generate_visualization 支持的 26 种类型之一
+preferred_currency: CNY          # "CNY", "USD", "EUR", "JPY", "HKD", "GBP"
 preferred_language: zh           # "zh", "en"
 recent_suppliers:                # 最近使用/关注的供应商列表
   - 博世

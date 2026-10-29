@@ -82,11 +82,11 @@ class LLMRequestParser:
         )
 
     async def parse(
-        self,
-        raw_text: str,
-        *,
-        previous: dict[str, Any] | None = None,
-        answer: Any = None,
+            self,
+            raw_text: str,
+            *,
+            previous: dict[str, Any] | None = None,
+            answer: Any = None,
     ) -> ProcurementRequest:
         context = {
             "raw_text": raw_text,
@@ -121,9 +121,9 @@ class LLMRequestParser:
         raise ValueError(f"REQUEST_PARSE_FAILED: {last_error}") from last_error
 
     async def merge(
-        self,
-        previous: ProcurementRequest,
-        answer: Any,
+            self,
+            previous: ProcurementRequest,
+            answer: Any,
     ) -> ProcurementRequest:
         # 如果前端直接给 request_patch，优先做确定性合并，避免再调一次模型
         if isinstance(answer, dict) and isinstance(answer.get("request_patch"), dict):

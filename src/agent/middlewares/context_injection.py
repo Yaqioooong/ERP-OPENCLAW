@@ -17,6 +17,11 @@ from langchain_core.messages import SystemMessage
 from langgraph.runtime import Runtime
 from langgraph.typing import ContextT
 
+from agent.memory.identity import (
+    MemoryIdentityError,
+    preferences_path,
+    require_user_id,
+)
 from agent.log_utils import MyLogger
 
 logger = MyLogger().get_logger()
@@ -31,9 +36,12 @@ class ContextInjectionMiddleware(AgentMiddleware):
         if ctx is None:
             logger.warning("ContextInjectionMiddleware: runtime.context is None, skip")
             return None
-        user_id = getattr(ctx, "user_id", None)
-        if user_id is None:
-            logger.warning("ContextInjectionMiddleware: runtime.context has no user_id，skip")
+        try:
+            user_id = require_user_id(ctx)
+        except MemoryIdentityError:
+            logger.error(
+                "ContextInjectionMiddleware: missing trusted user_id，拒绝注入记忆路径"
+            )
             return None
         username = getattr(ctx, "username", None) or user_id
         logger.info(f"ContextInjectionMiddleware: 注入用户上下文 user_id={user_id}, username={username}")
@@ -41,7 +49,7 @@ class ContextInjectionMiddleware(AgentMiddleware):
             f"【系统上下文】\n"
             f"当前用户user_id: {user_id}\n"
             f"当前用户username: {username}\n"
-            f"用户偏好文件路径: /memories/{user_id}/preferences.md\n\n"
+            f"用户偏好文件路径: {preferences_path(user_id)}\n\n"
             f"请首先使用read_file 读取上述偏好文件，了解用户偏好。\n"
             f"(recent_suppliers和recent_queries 由系统自动维护，无需手动更新)"
         )

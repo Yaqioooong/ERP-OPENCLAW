@@ -70,13 +70,13 @@ class AgentLoader:
     def create_config(
         self,
         thread_id: Optional[str] = None,
-        user_id: Optional[str] = None,
         **kwargs,
     ) -> Dict[str, Any]:
+        # 身份只通过运行时 context 传递；这里保留 user_id 默认值会形成第二条
+        # 不可信身份通道，因此显式删除。
         return {
             "configurable": {
                 "thread_id": thread_id or str(uuid.uuid4()),
-                "user_id": user_id or "guoyaxing",
                 **kwargs,
             }
         }

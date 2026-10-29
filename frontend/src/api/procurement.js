@@ -1,37 +1,42 @@
+import { notifyIfUnauthorized } from './auth.js'
+
 const API_BASE = '/api/procurement'
 
-function headers() {
-  return {
-    'Content-Type': 'application/json',
-    // 开发身份；生产应换成 JWT/Session 注入。
-    'X-User-Id': 'guoyaxing',
-    'X-Username': 'guoyaxing',
-    'X-Roles': 'requester,approver',
+function jsonHeaders() {
+  return { 'Content-Type': 'application/json' }
+}
+
+async function parseError(response, fallback) {
+  try {
+    const data = await response.json()
+    if (typeof data?.detail === 'string') return new Error(data.detail)
+  } catch {
+    /* ignore */
   }
+  return new Error(`${fallback}: ${response.status}`)
 }
 
 export async function createProcurementTask(request) {
   const response = await fetch(`${API_BASE}/tasks`, {
     method: 'POST',
-    headers: headers(),
+    credentials: 'same-origin',
+    headers: jsonHeaders(),
     body: JSON.stringify({
       message: '',
       request,
     }),
   })
-  if (!response.ok) {
-    throw new Error(`创建采购任务失败: ${response.status}`)
-  }
+  notifyIfUnauthorized(response)
+  if (!response.ok) throw await parseError(response, '创建采购任务失败')
   return response.json()
 }
 
 export async function getProcurementTask(taskId) {
   const response = await fetch(`${API_BASE}/tasks/${encodeURIComponent(taskId)}`, {
-    headers: headers(),
+    credentials: 'same-origin',
   })
-  if (!response.ok) {
-    throw new Error(`查询采购任务失败: ${response.status}`)
-  }
+  notifyIfUnauthorized(response)
+  if (!response.ok) throw await parseError(response, '查询采购任务失败')
   return response.json()
 }
 
@@ -40,12 +45,12 @@ export async function resumeProcurementTask(taskId, resume) {
     `${API_BASE}/tasks/${encodeURIComponent(taskId)}/resume`,
     {
       method: 'POST',
-      headers: headers(),
+      credentials: 'same-origin',
+      headers: jsonHeaders(),
       body: JSON.stringify({ resume }),
     },
   )
-  if (!response.ok) {
-    throw new Error(`恢复采购任务失败: ${response.status}`)
-  }
+  notifyIfUnauthorized(response)
+  if (!response.ok) throw await parseError(response, '恢复采购任务失败')
   return response.json()
 }

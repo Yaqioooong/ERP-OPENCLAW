@@ -34,10 +34,6 @@ def task_thread_id(task_id: str) -> str:
     return f"procurement:{task_id}"
 
 
-# 兼容之前写错的命名；新代码统一使用 task_thread_id。
-task_thread_iid = task_thread_id
-
-
 class TaskCheckpointMissing(RuntimeError):
     pass
 
@@ -97,7 +93,11 @@ class ProcurementTaskRunner:
 
         config = {"configurable": {"thread_id": thread_id}}
         context = ProcurementContext(
-            user_id=user_id, username=username, roles=roles
+            user_id=user_id,
+            username=username,
+            roles=roles,
+            request_id=task_id,
+            thread_id=thread_id,
         )
         state = initial_state(
             task_id=task_id,
@@ -181,7 +181,11 @@ class ProcurementTaskRunner:
         )
         config = {"configurable": {"thread_id": thread_id}}
         context = ProcurementContext(
-            user_id=user_id, username=username, roles=roles
+            user_id=user_id,
+            username=username,
+            roles=roles,
+            request_id=task_id,
+            thread_id=thread_id,
         )
         state = initial_state(
             task_id=task_id,
@@ -280,7 +284,11 @@ class ProcurementTaskRunner:
         )
         config = {"configurable": {"thread_id": record.thread_id}}
         context = ProcurementContext(
-            user_id=user_id, username=username, roles=roles
+            user_id=user_id,
+            username=username,
+            roles=roles,
+            request_id=task_id,
+            thread_id=record.thread_id,
         )
         snapshot = await self._graph.aget_state(config)
 
@@ -341,7 +349,11 @@ class ProcurementTaskRunner:
             task_id,
             {"configurable": {"thread_id": record.thread_id}},
             ProcurementContext(
-                user_id=user_id, username=user_id, roles=roles
+                user_id=user_id,
+                username=user_id,
+                roles=roles,
+                request_id=f"get:{task_id}",
+                thread_id=record.thread_id,
             ),
         )
 

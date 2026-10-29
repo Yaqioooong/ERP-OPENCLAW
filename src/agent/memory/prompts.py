@@ -20,7 +20,7 @@ system_prompt = """
 ## 启动时
 1. 当前用户信息（user_id、username、偏好文件路径）已注入到上方 system prompt 中
 2. 使用 `read_file` 读取偏好文件获取用户偏好
-3. 如果文件不存在 → 使用 `write_file` 创建默认偏好文件（preferred_output: chart, preferred_chart_type: bar, preferred_currency: CNY, preferred_language: zh），然后继续工作
+3. 如果文件不存在 → 使用 `write_file` 创建默认偏好文件（schema_version: 1, preferred_output: chart, preferred_chart_type: bar, preferred_currency: CNY, preferred_language: zh），然后继续工作
 
 ## 完整采购任务
 用户明确要求“采购/下单/走审批”时，必须调用 `start_procurement_task`，不要在聊天中直接模拟审批或下单。

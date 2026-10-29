@@ -8,6 +8,8 @@
 - **采购分析**：供应商比价、物料行情、库存预警、订单明细查询，支持 26 种图表与地图可视化，最终输出结构化报告。
 - **订单操作**：采购订单创建、修改与查询；关键字段缺失时通过 HITL 中断向用户补充信息，绝不猜测业务数据。
 - **完整采购任务**：前端「采购任务」面板和主 Agent 工具都可以启动“分析 → 审批 → 下单 → 核验”状态机。
+- **注册、登录与权限**：支持自助注册（默认申请人）、登录会话、修改密码、退出所有设备；固定 `requester/approver/admin` 角色，管理员可审批角色升级、启停账号与重置密码。
+- **可信身份与记忆隔离**：登录后由服务端会话确定 `user_id`，不接受客户端身份头；`/memories/` 强制按 `(user_id,)` 命名空间读写，路径越权与身份缺失都会被拒绝，并记录不含正文的审计日志。
 - **长期记忆**：用户偏好按 `user_id` 隔离，持久化在 Redis Store 的 `/memories/{user_id}/preferences.md`，跨会话生效。
 - **技能系统**：`/skills/` 下按主 Agent、采购、订单三个作用域组织技能，支持渐进式加载与用户自定义技能的持久化。
 - **会话持久化**：Redis Checkpointer 保存对话状态，前端可浏览、恢复和删除历史会话。
@@ -26,7 +28,9 @@ src/agent/tools/            图表、技能分配、MCP 客户端、订单字段
 src/agent/backends/         OpenSandbox 沙箱后端封装
 src/agent/memory/           主 Agent 系统提示词与 AGENTS.md
 src/mcp_server/             FastMCP 工具服务，对接 Java ERP REST API
-src/api_view/               FastAPI 后端（流式对话、历史会话、HITL 恢复）
+src/api_view/               FastAPI 后端（认证、流式对话、历史会话、HITL 恢复）
+src/api_view/auth/          登录、会话、用户表与认证依赖
+src/agent/memory/           记忆身份校验、审计与用户隔离 Backend
 src/skills/                 内置技能（main / procurement / order）
 frontend/                   Vue 3 + Vite 聊天前端
 ```
@@ -38,7 +42,7 @@ frontend/                   Vue 3 + Vite 聊天前端
 | Python | 3.10+ | 后端与 Agent 运行时 |
 | Node.js | 18+ | 前端开发服务器 |
 | PostgreSQL | `postgresql:///erp_openclaw` | 采购审批、任务、订单执行记录（本机默认 Unix socket） |
-| Redis | `redis://127.0.0.1:6379/0` | Checkpointer 与长期记忆存储 |
+| Redis | `redis://127.0.0.1:6379/0` | Checkpointer、长期记忆与登录会话 |
 | OpenSandbox | `http://127.0.0.1:8080` | 代码执行与文件操作沙箱 |
 | Java ERP 后端 | `http://localhost:8081/api` | 业务数据源 |
 | 本地 MCP 服务 | `http://127.0.0.1:8000/mcp` | ERP 工具暴露层 |
@@ -93,7 +97,7 @@ PROCUREMENT_TEST_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/erp_open
 
 ### 3. 配置环境变量
 
-在项目根目录创建 `.env`（`langgraph.json` 会自动加载）：
+在项目根目录创建 `.env`（`langgraph.json` 会自动加载）。认证相关变量见下方“登录与用户开通”：
 
 ```text
 DEEPSEEK_API_KEY=...
@@ -111,7 +115,14 @@ LANGSMITH_PROJECT=...
 - `PROCUREMENT_REQUIRE_DISTINCT_APPROVER=true`：要求审批人与申请人不同（默认 `false`）。
 - 采购 API 角色头：`X-User-Id`、`X-Username`、`X-Roles`（如 `requester` / `approver` / `admin`，逗号分隔）。
 - `PROCUREMENT_TEST_DATABASE_URL`：测试库，默认 `postgresql:///erp_openclaw_test`。
-- `APP_ENV=production`：日志写入 `erp_agent.log`，否则输出到控制台。
+- `APP_ENV=production`：日志写入 `erp_agent.log`，否则输出到控制台；生产环境强制安全 Cookie 并禁用开发登录。
+- `AUTH_DATABASE_URL`：认证用户库，默认与采购库相同（`postgresql:///erp_openclaw`）。
+- `AUTH_SESSION_TTL_SECONDS`：登录会话有效期，默认 `28800`（8 小时）。
+- `AUTH_COOKIE_SECURE`：HTTPS 部署必须为 `true`；生产默认 `true`。
+- `AUTH_ALLOWED_ORIGINS`：允许的前端来源，逗号分隔，默认 `http://localhost:3000,http://127.0.0.1:3000`。
+- `AUTH_DEV_DEMO_USER_ID`：仅开发环境；配置后登录页出现“开发登录”入口，生产环境不会启用。
+- `AUTH_REGISTER_MAX_ATTEMPTS` / `AUTH_REGISTER_WINDOW_SECONDS`：同一 IP 的注册频率限制，默认 5 次/小时。
+- `AUTH_LOGIN_MAX_FAILURES` / `AUTH_LOGIN_WINDOW_SECONDS`：同一用户名+IP 的登录失败限制，默认 10 次/5 分钟。
 
 ### 4. 运行评测
 
@@ -178,6 +189,46 @@ pip install "langgraph-cli[inmem]"
 langgraph dev
 ```
 
+### 7. 注册、登录与权限
+
+认证用户表 `app_user` 与角色申请表由应用启动时自动创建。系统不提供默认账号，也不提供环境变量默认管理员。
+
+**首次部署：用 CLI 开通第一个管理员**
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/manage_auth_users.py create \
+  --user-id u_admin --username admin --display-name 管理员 --roles admin
+```
+
+之后的管理员可以在页面右上角「用户管理」中维护用户；也可以继续用 CLI：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/manage_auth_users.py reset-password --user-id u_admin
+PYTHONPATH=src .venv/bin/python scripts/manage_auth_users.py list
+```
+
+**普通用户**
+
+- 登录页可直接注册；注册成功后立即生效并自动登录，默认角色 `requester`。
+- 密码要求：8–128 位，至少包含字母和数字，不能包含用户名。
+- 需要审批权限时，在用户菜单提交 `approver` 申请，由管理员审批；审批通过后下一次请求即生效，无需重新登录。
+- 用户菜单支持修改密码、退出所有设备、退出登录。
+- 管理员重置密码后会生成一次性临时密码，用户首次登录必须先改密，改密前业务接口返回 `403 password_change_required`。
+
+**接口与错误**
+
+- `POST /api/auth/register`、`GET /api/auth/policy`、`POST /api/auth/login`、`/logout`、`/me`、`/change-password`、`/logout-all`、`/role-requests`。
+- `GET/PATCH /api/admin/users`、`POST /api/admin/users/{id}/reset-password`、`GET /api/admin/role-requests` 及审批接口，仅 `admin` 可访问。
+- 未认证 `401`；无权限 `403`；重复用户名 `409`；字段错误 `422`；频率限制 `429`。
+- 本地开发如需演示身份，可在 `.env` 设置 `APP_ENV=development` 和 `AUTH_DEV_DEMO_USER_ID=u_demo`，登录页会出现“开发登录”。生产环境该入口始终不存在。
+
+**权限收口**
+
+- 聊天与记忆：仅会话归属者可访问，管理员也不能读取他人聊天正文。
+- 历史：普通用户只能看到自己的会话；管理员可看元数据但不能读他人消息正文，可删除会话用于排障。
+- 采购：身份与角色来自数据库会话，客户端 `X-User-Id`/`X-Roles` 不再生效；approver/admin 可按权限查看任务，申请人只能看自己的。
+- 旧会话没有归属信息，默认拒绝访问；请新建会话。
+
 ## 调用示例
 
 ```python
@@ -219,7 +270,15 @@ result = await graph.ainvoke(
 
 ### 用户偏好持久化
 
-`CompositeBackend` 按路径分流：`/memories/` 下的读写被路由到 Redis `StoreBackend`，命名空间为 `(user_id,)`；其余路径（`/analysis`、`/data`、`/skills`）落在 OpenSandbox 沙箱。`MemoryUpdateMiddleware` 会在每轮对话后自动维护 `recent_suppliers` 与 `recent_queries`。
+`CompositeBackend` 按路径分流：`/memories/` 下的读写被路由到 Redis `StoreBackend`，命名空间为 `(user_id,)`；其余路径（`/analysis`、`/data`、`/skills`）落在 OpenSandbox 沙箱。
+
+偏好文件使用 Pydantic 模型 `UserPreferences` 严格校验（`schema_version: 1`）：
+
+- `preferred_output` 只允许 `table` / `chart`；
+- `preferred_chart_type` 只允许 `generate_visualization` 支持的图表类型；
+- 未知字段、非法枚举、错误类型、缩进错误一律拒绝写入并告警，不覆盖原文件；
+- 无版本或 `schema_version: 0` 的旧文件按 v0→v1 规则迁移，显式字段保留；
+- `MemoryUpdateMiddleware` 每轮只自动维护 `recent_suppliers` / `recent_queries`，不修改显式偏好。
 
 ## 扩展开发
 
@@ -239,4 +298,6 @@ result = await graph.ainvoke(
 - **首次请求很慢**：每个会话会新建沙箱并加载 MCP 工具，属正常初始化开销。
 - **端口冲突**：后端 `8090`、前端 `3000`、MCP `8000`、沙箱 `8080`、Java 后端 `8081`，可在对应配置文件中调整。
 - **历史会话为空**：确认 Redis 已启动且 `REDIS_URL` 指向正确的库。
+- **登录后立即 401**：确认 `AUTH_ALLOWED_ORIGINS` 包含当前前端地址、浏览器允许 `erp_session` Cookie；生产必须使用 HTTPS 且 `AUTH_COOKIE_SECURE=true`。
+- **无法继续旧对话**：001 起会话归属被强制校验，旧会话没有绑定用户会返回 403；请新建会话。
 

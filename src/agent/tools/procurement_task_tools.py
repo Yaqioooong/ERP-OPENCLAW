@@ -12,12 +12,13 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from agent.memory.identity import require_user_id
 from agent.procurement.dependencies import get_task_runner
 
 
 def _context(runtime: ToolRuntime) -> tuple[str, str, tuple[str, ...]]:
     context = getattr(runtime, "context", None)
-    user_id = getattr(context, "user_id", None) or "guoyaxing"
+    user_id = require_user_id(context)
     username = getattr(context, "username", None) or user_id
     roles = tuple(getattr(context, "roles", ()) or ())
     return user_id, username, roles

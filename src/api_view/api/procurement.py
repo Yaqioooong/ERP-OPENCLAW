@@ -1,5 +1,4 @@
-from fastapi import APIRouter, Header, HTTPException, Query
-from fastapi.params import Depends
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Literal
@@ -11,6 +10,8 @@ from agent.procurement.dependencies import (
 )
 from agent.procurement.task_events import encode_sse
 from agent.procurement.task_runner import TaskCheckpointMissing
+from api_view.auth.models import AuthenticatedUser
+from api_view.auth.permissions import require_password_ready
 
 router = APIRouter()
 
@@ -31,32 +32,20 @@ class ResolveExecutionRequest(BaseModel):
     comment: str = ""
 
 
-def get_current_user(
-        x_user_id: str | None = Header(default=None, alias="X-User-Id"),
-        x_username: str | None = Header(default=None, alias="X-Username"),
-        x_roles: str | None = Header(default=None, alias="X-Roles"),
-) -> tuple[str, str, tuple[str, ...]]:
-    # 开发占位：生产替换为 JWT/Session 认证
-    user_id = x_user_id or "guoyaxing"
-    roles = tuple(
-        role.strip()
-        for role in (x_roles or "requester").split(",")
-        if role.strip()
-    )
-    return user_id, x_username or user_id, roles
-
-
 @router.post("/procurement/tasks")
-async def start_task(request: StartTaskRequest, user=Depends(get_current_user)):
+async def start_task(
+        request: StartTaskRequest,
+        user: AuthenticatedUser = Depends(require_password_ready),
+):
     try:
         runner = await get_task_runner()
         return await runner.start(
             raw_request=request.message,
-            user_id=user[0],
-            username=user[1],
+            user_id=user.user_id,
+            username=user.username,
             conversation_id=request.conversation_id,
             request=request.request,
-            roles=user[2],
+            roles=user.roles,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -66,16 +55,16 @@ async def start_task(request: StartTaskRequest, user=Depends(get_current_user)):
 async def resume_task(
         task_id: str,
         request: ResumeTaskRequest,
-        user=Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_password_ready),
 ):
     try:
         runner = await get_task_runner()
         return await runner.resume(
             task_id=task_id,
-            user_id=user[0],
-            username=user[1],
+            user_id=user.user_id,
+            username=user.username,
             resume_data=request.resume,
-            roles=user[2],
+            roles=user.roles,
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -92,14 +81,14 @@ async def stream_task_events(
         last_event_id: str | None = Header(
             default=None, alias="Last-Event-ID"
         ),
-        user=Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_password_ready),
 ):
     try:
         runner = await get_task_runner()
         record = await runner.get_record(task_id)
-        roles = set(user[2]) if len(user) > 2 else set()
+        roles = set(user.roles)
         if record is None or (
-                record.user_id != user[0]
+                record.user_id != user.user_id
                 and not (roles & {"approver", "admin"})
         ):
             raise HTTPException(status_code=403, detail="无权读取该任务事件")
@@ -136,11 +125,14 @@ async def stream_task_events(
 
 
 @router.get("/procurement/tasks/{task_id}")
-async def get_task(task_id: str, user=Depends(get_current_user)):
+async def get_task(
+        task_id: str,
+        user: AuthenticatedUser = Depends(require_password_ready),
+):
     try:
         runner = await get_task_runner()
         return await runner.get(
-            task_id=task_id, user_id=user[0], roles=user[2]
+            task_id=task_id, user_id=user.user_id, roles=user.roles
         )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
@@ -151,7 +143,7 @@ async def get_task(task_id: str, user=Depends(get_current_user)):
 @router.get("/procurement/executions/unknown")
 async def list_unknown_executions(
         limit: int = 50,
-        user=Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_password_ready),
 ):
     try:
         reconciler = await get_order_reconciler()
@@ -160,7 +152,9 @@ async def list_unknown_executions(
         items = []
         for record in records:
             task = await runner.get_record(record.task_id)
-            if task is None or task.user_id != user[0]:
+            if task is None or (
+                task.user_id != user.user_id and "admin" not in user.roles
+            ):
                 continue
             items.append(
                 {
@@ -182,7 +176,7 @@ async def list_unknown_executions(
 @router.post("/procurement/executions/{idempotency_key}/reconcile")
 async def reconcile_execution(
         idempotency_key: str,
-        user=Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_password_ready),
 ):
     try:
         reconciler = await get_order_reconciler()
@@ -191,7 +185,9 @@ async def reconcile_execution(
         if record is None:
             raise HTTPException(status_code=404, detail="执行记录不存在")
         task = await runner.get_record(record.task_id)
-        if task is None or task.user_id != user[0]:
+        if task is None or (
+            task.user_id != user.user_id and "admin" not in user.roles
+        ):
             raise HTTPException(status_code=403, detail="无权操作该订单执行记录")
         return await reconciler.verify_by_key(idempotency_key)
     except HTTPException:
@@ -204,7 +200,7 @@ async def reconcile_execution(
 async def resolve_execution(
         idempotency_key: str,
         request: ResolveExecutionRequest,
-        user=Depends(get_current_user),
+        user: AuthenticatedUser = Depends(require_password_ready),
 ):
     try:
         reconciler = await get_order_reconciler()
@@ -213,7 +209,9 @@ async def resolve_execution(
         if record is None:
             raise HTTPException(status_code=404, detail="执行记录不存在")
         task = await runner.get_record(record.task_id)
-        if task is None or task.user_id != user[0]:
+        if task is None or (
+            task.user_id != user.user_id and "admin" not in user.roles
+        ):
             raise HTTPException(status_code=403, detail="无权操作该订单执行记录")
         return await reconciler.manual_resolve(
             idempotency_key=idempotency_key,

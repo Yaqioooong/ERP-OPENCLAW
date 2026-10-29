@@ -12,6 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from api_view.web_config import API_TITLE, API_VERSION, API_DESCRIPTION
 from api_view.api import chat, history, procurement
 from api_view.agent_loader import agent_loader
+from api_view.auth import config as auth_config
+from api_view.auth.admin_router import router as admin_router
+from api_view.auth.router import router as auth_router
+from api_view.auth.users import get_user_repository
 
 
 @asynccontextmanager
@@ -29,6 +33,14 @@ async def lifespan(app: FastAPI):
     print("=" * 50)
 
     try:
+        # 初始化认证用户表；没有用户时只告警，绝不自动创建默认账号。
+        auth_users = await get_user_repository()
+        if await auth_users.count() == 0:
+            print(
+                "[auth] 用户表为空：请先执行 scripts/manage_auth_users.py create 开通账号；"
+                "生产环境没有默认用户。"
+            )
+
         # 初始化 Agent
         await agent_loader.initialize()
 
@@ -81,7 +93,7 @@ app = FastAPI(
 # 允许跨域请求，方便前端开发
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 生产环境建议限制为具体的前端域名
+    allow_origins=list(auth_config.ALLOWED_ORIGINS),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,6 +103,9 @@ app.add_middleware(
 # ============================================================
 # 注册路由
 # ============================================================
+# 认证接口
+app.include_router(auth_router, prefix="/api", tags=["认证"])
+app.include_router(admin_router, prefix="/api", tags=["用户管理"])
 # 对话相关接口
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 # 历史记录相关接口

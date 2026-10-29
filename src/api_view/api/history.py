@@ -9,7 +9,7 @@ import re
 from typing import Optional, Any, Dict, List
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from agent.schema import (
     Session,
@@ -19,6 +19,12 @@ from agent.schema import (
     Message,
 )
 from api_view.agent_loader import agent_loader
+from api_view.auth.models import AuthenticatedUser
+from api_view.auth.permissions import require_password_ready
+from api_view.thread_ownership import (
+    ThreadOwnershipUnavailable,
+    get_thread_ownership_store,
+)
 
 
 # 创建路由
@@ -250,13 +256,37 @@ def serialize_messages_from_checkpoint(messages: list) -> list:
 
 
 # ============================================================
+# 权限辅助
+# ============================================================
+
+def _thread_owner(thread_id: str) -> str | None:
+    try:
+        return get_thread_ownership_store().get_owner(thread_id)
+    except ThreadOwnershipUnavailable as exc:
+        raise HTTPException(status_code=503, detail="会话归属校验暂不可用") from exc
+
+
+def _require_thread_access(
+    thread_id: str,
+    user: AuthenticatedUser,
+    *,
+    allow_admin: bool = True,
+) -> None:
+    owner = _thread_owner(thread_id)
+    is_admin = allow_admin and "admin" in user.roles
+    if owner != user.user_id and not is_admin:
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+
+
+# ============================================================
 # API 路由
 # ============================================================
 
 @router.get("/history", response_model=SessionListResponse)
 async def get_sessions(
     page: int = Query(1, ge=1, description="页码"),
-    limit: int = Query(20, ge=1, le=100, description="每页数量")
+    limit: int = Query(20, ge=1, le=100, description="每页数量"),
+    user: AuthenticatedUser = Depends(require_password_ready),
 ):
     """获取会话列表"""
     try:
@@ -265,6 +295,23 @@ async def get_sessions(
         sessions = []
         for thread_id in all_thread_ids:
             try:
+                owner = _thread_owner(thread_id)
+                is_admin = "admin" in user.roles
+                if owner != user.user_id and not is_admin:
+                    continue
+
+                updated_at = agent_loader.get_session_updated_at(thread_id)
+                if owner != user.user_id:
+                    # 管理员只能看元数据，不读取他人消息正文。
+                    sessions.append(Session(
+                        thread_id=thread_id,
+                        title=f"会话 {thread_id[:8]}",
+                        created_at=updated_at,
+                        updated_at=updated_at,
+                        message_count=0,
+                    ))
+                    continue
+
                 messages = await agent_loader.get_current_messages(thread_id)
 
                 if messages:
@@ -281,7 +328,6 @@ async def get_sessions(
                         title = "新对话"
 
                     message_count = len(messages) // 2
-                    updated_at = agent_loader.get_session_updated_at(thread_id)
 
                     sessions.append(Session(
                         thread_id=thread_id,
@@ -290,6 +336,8 @@ async def get_sessions(
                         updated_at=updated_at,
                         message_count=message_count
                     ))
+            except HTTPException:
+                raise
             except Exception as e:
                 print(f"[HistoryAPI] 处理会话 {thread_id} 失败: {e}")
                 continue
@@ -308,19 +356,25 @@ async def get_sessions(
             limit=limit
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[HistoryAPI] 获取会话列表失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/history/{thread_id}/messages", response_model=SessionMessagesResponse)
-async def get_session_messages(thread_id: str):
+async def get_session_messages(
+    thread_id: str,
+    user: AuthenticatedUser = Depends(require_password_ready),
+):
     """
     获取会话消息历史
 
     优先从 Redis session display key 读取（包含子代理消息），
     如不存在则回退到 checkpoint 序列化（兼容旧会话数据）。
     """
+    _require_thread_access(thread_id, user, allow_admin=False)
     try:
         # 优先从 Redis 读取流式过程中保存的完整展示消息
         serialized = await agent_loader.get_display_messages(thread_id)
@@ -359,8 +413,12 @@ async def get_session_messages(thread_id: str):
 
 
 @router.delete("/history/{thread_id}", response_model=DeleteSessionResponse)
-async def delete_session(thread_id: str):
-    """删除会话"""
+async def delete_session(
+    thread_id: str,
+    user: AuthenticatedUser = Depends(require_password_ready),
+):
+    """删除会话；仅归属者或管理员。"""
+    _require_thread_access(thread_id, user)
     try:
         success = await agent_loader.delete_session(thread_id)
 
@@ -375,8 +433,13 @@ async def delete_session(thread_id: str):
 
 
 @router.patch("/history/{thread_id}")
-async def update_session_title(thread_id: str, title: str = Query(..., description="新的会话标题")):
+async def update_session_title(
+    thread_id: str,
+    title: str = Query(..., description="新的会话标题"),
+    user: AuthenticatedUser = Depends(require_password_ready),
+):
     """更新会话标题"""
+    _require_thread_access(thread_id, user)
     return {
         "success": True,
         "message": "标题更新功能待实现",

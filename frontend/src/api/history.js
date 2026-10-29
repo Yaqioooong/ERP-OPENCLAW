@@ -1,3 +1,5 @@
+import { notifyIfUnauthorized } from './auth.js'
+
 /**
  * 历史记录 API 模块
  *
@@ -14,7 +16,10 @@ const API_BASE = '/api/history'
  * @returns {Promise} 返回会话列表响应 { sessions, total, page, limit }
  */
 export async function getSessions(page = 1, limit = 20) {
-  const response = await fetch(`${API_BASE}?page=${page}&limit=${limit}`)
+  const response = await fetch(`${API_BASE}?page=${page}&limit=${limit}`, {
+    credentials: 'same-origin',
+  })
+  notifyIfUnauthorized(response)
 
   if (!response.ok) {
     throw new Error('获取会话列表失败')
@@ -30,7 +35,10 @@ export async function getSessions(page = 1, limit = 20) {
  * @returns {Promise} 返回会话消息响应 { thread_id, messages }
  */
 export async function getMessages(threadId) {
-  const response = await fetch(`${API_BASE}/${threadId}/messages`)
+  const response = await fetch(`${API_BASE}/${threadId}/messages`, {
+    credentials: 'same-origin',
+  })
+  notifyIfUnauthorized(response)
 
   if (!response.ok) {
     throw new Error('获取会话消息失败')
@@ -47,8 +55,10 @@ export async function getMessages(threadId) {
  */
 export async function deleteSession(threadId) {
   const response = await fetch(`${API_BASE}/${threadId}`, {
-    method: 'DELETE'
+    method: 'DELETE',
+    credentials: 'same-origin',
   })
+  notifyIfUnauthorized(response)
 
   if (!response.ok) {
     throw new Error('删除会话失败')
@@ -68,8 +78,10 @@ export async function deleteSession(threadId) {
  */
 export async function updateSessionTitle(threadId, title) {
   const response = await fetch(`${API_BASE}/${threadId}?title=${encodeURIComponent(title)}`, {
-    method: 'PATCH'
+    method: 'PATCH',
+    credentials: 'same-origin',
   })
+  notifyIfUnauthorized(response)
 
   if (!response.ok) {
     throw new Error('更新会话标题失败')

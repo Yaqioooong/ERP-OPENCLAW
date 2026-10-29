@@ -56,6 +56,36 @@
         />
       </button>
 
+      <details v-if="user" class="user-menu">
+        <summary class="user-chip" :title="user.username">
+          <UserRound :size="15" />
+          <span class="user-name">{{ user.display_name || user.username }}</span>
+          <ChevronDown :size="13" />
+        </summary>
+        <div class="user-dropdown">
+          <div class="user-meta">
+            <strong>{{ user.display_name || user.username }}</strong>
+            <span>{{ roleText }}</span>
+          </div>
+          <button type="button" @click="$emit('change-password')">
+            <KeyRound :size="14" />
+            修改密码
+          </button>
+          <button type="button" @click="$emit('logout-all')">
+            <MonitorSmartphone :size="14" />
+            退出所有设备
+          </button>
+          <button v-if="isAdmin" type="button" @click="$emit('open-admin')">
+            <ShieldCheck :size="14" />
+            用户管理
+          </button>
+          <button type="button" class="danger" @click="$emit('logout')">
+            <LogOut :size="14" />
+            退出登录
+          </button>
+        </div>
+      </details>
+
       <button
         class="icon-btn"
         type="button"
@@ -71,9 +101,22 @@
 </template>
 
 <script setup>
-import { ClipboardList, ListTree, Moon, PanelLeft, Sun } from '@lucide/vue'
+import { computed } from 'vue'
+import {
+  ChevronDown,
+  ClipboardList,
+  KeyRound,
+  ListTree,
+  LogOut,
+  MonitorSmartphone,
+  Moon,
+  PanelLeft,
+  ShieldCheck,
+  Sun,
+  UserRound,
+} from '@lucide/vue'
 
-defineProps({
+const props = defineProps({
   title: { type: String, default: '' },
   status: {
     type: Object,
@@ -84,9 +127,25 @@ defineProps({
   taskActive: { type: Boolean, default: false },
   taskPending: { type: Boolean, default: false },
   theme: { type: String, default: 'light' },
+  user: { type: Object, default: null },
 })
 
-defineEmits(['toggle-process', 'open-task', 'toggle-theme', 'toggle-sidebar'])
+defineEmits([
+  'toggle-process',
+  'open-task',
+  'toggle-theme',
+  'toggle-sidebar',
+  'logout',
+  'logout-all',
+  'change-password',
+  'open-admin',
+])
+
+const isAdmin = computed(() => (props.user?.roles || []).includes('admin'))
+const roleText = computed(() => {
+  const labels = { requester: '申请人', approver: '审批人', admin: '管理员' }
+  return (props.user?.roles || []).map((role) => labels[role] || role).join(' · ')
+})
 </script>
 
 <style scoped>
@@ -175,6 +234,104 @@ defineEmits(['toggle-process', 'open-task', 'toggle-theme', 'toggle-sidebar'])
 
 .status-done .status-dot {
   background: var(--success);
+}
+
+.user-menu {
+  position: relative;
+}
+
+.user-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.user-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.user-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 30;
+  display: grid;
+  min-width: 200px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
+}
+
+.user-meta {
+  display: grid;
+  gap: 2px;
+  padding: 7px 9px 9px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 4px;
+}
+
+.user-meta strong {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.user-meta span {
+  color: var(--ink-3);
+  font-size: 11px;
+}
+
+.user-dropdown button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: calc(var(--r-sm) - 2px);
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.user-dropdown button:hover {
+  background: var(--canvas);
+}
+
+.user-dropdown button.danger {
+  color: var(--danger, #dc2626);
+}
+
+.user-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 4px 0 9px;
+  margin: 0 4px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-full);
+  color: var(--ink-2);
+  font-size: 12px;
+  max-width: 180px;
+}
+
+.user-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 640px) {
+  .user-name {
+    display: none;
+  }
+  .user-chip {
+    padding: 0 3px;
+  }
 }
 
 .header-actions {

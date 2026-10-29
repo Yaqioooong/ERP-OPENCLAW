@@ -1,5 +1,6 @@
 <template>
-  <div class="app-shell">
+  <LoginView v-if="authState === 'anonymous'" @logged-in="handleLoggedIn" />
+  <div v-else-if="authState === 'authenticated'" class="app-shell">
     <Sidebar
       ref="sidebarRef"
       :sessions="sessions"
@@ -26,6 +27,7 @@
     >
       <AppHeader
         :title="currentTitle"
+        :user="currentUser"
         :status="agentStatus"
         :show-process="showToolCalls"
         :has-active-task="hasTask"
@@ -36,6 +38,10 @@
         @open-task="openProcurement"
         @toggle-theme="toggleTheme"
         @toggle-sidebar="openSidebar"
+        @logout="handleLogout"
+        @logout-all="handleLogoutAll"
+        @change-password="showPassword = true"
+        @open-admin="showAdmin = true"
       />
 
       <ChatArea
@@ -79,7 +85,24 @@
       <ProcurementTaskPanel v-if="showProcurement" @close="closeProcurement" />
 
       <ToastHost />
+
+      <ChangePassword
+        v-if="showPassword"
+        :forced="!!currentUser?.must_change_password"
+        @close="showPassword = false"
+        @changed="handlePasswordChanged"
+      />
+
+      <AdminPanel
+        v-if="showAdmin"
+        :current-user="currentUser"
+        @close="showAdmin = false"
+      />
     </main>
+  </div>
+  <div v-else class="auth-loading">
+    <span class="auth-loading-dot" />
+    正在验证登录状态…
   </div>
 </template>
 
@@ -94,8 +117,12 @@ import InputArea from './components/InputArea.vue'
 import InterruptBanner from './components/InterruptBanner.vue'
 import ProcurementTaskPanel from './components/ProcurementTaskPanel.vue'
 import ToastHost from './components/ToastHost.vue'
+import LoginView from './components/LoginView.vue'
+import ChangePassword from './components/ChangePassword.vue'
+import AdminPanel from './components/AdminPanel.vue'
 import { streamChat, resumeChat } from './api/chat.js'
 import { getSessions, getMessages, deleteSession } from './api/history.js'
+import { getMe, logout as logoutRequest, logoutAll as logoutAllRequest } from './api/auth.js'
 import { useTheme } from './composables/useTheme'
 import { useToast } from './composables/useToast'
 import { useTaskStore } from './composables/useTaskStore'
@@ -117,6 +144,10 @@ const messagesLoading = ref(false)
 const isStreaming = ref(false)
 const isResuming = ref(false)
 const showToolCalls = ref(true)
+const authState = ref('loading')
+const currentUser = ref(null)
+const showPassword = ref(false)
+const showAdmin = ref(false)
 const sidebarOpen = ref(false)
 const draft = ref('')
 const resumeError = ref('')
@@ -209,11 +240,92 @@ const interruptKey = computed(() => {
 /* ============================================================
    生命周期
    ============================================================ */
-onMounted(() => {
-  loadSessions()
+onMounted(async () => {
+  window.addEventListener('auth:expired', handleAuthExpired)
+  await bootstrapAuth()
 })
 
+async function bootstrapAuth() {
+  try {
+    const response = await getMe()
+    currentUser.value = response.user
+    authState.value = 'authenticated'
+    if (response.user.must_change_password) {
+      showPassword.value = true
+    } else {
+      await loadSessions()
+    }
+  } catch (error) {
+    // 401 或网络异常都回到登录页；不在这里猜测身份。
+    console.warn('[App] 未获取到有效登录态:', error?.status || error?.message)
+    authState.value = 'anonymous'
+    sessionsLoading.value = false
+  }
+}
+
+async function handleLoggedIn(user) {
+  currentUser.value = user
+  authState.value = 'authenticated'
+  showAdmin.value = false
+  if (user.must_change_password) {
+    showPassword.value = true
+    return
+  }
+  await loadSessions()
+}
+
+async function handlePasswordChanged(user) {
+  currentUser.value = user
+  showPassword.value = false
+  if (authState.value === 'authenticated') {
+    await loadSessions()
+  }
+  toast('密码已更新', { tone: 'success' })
+}
+
+async function handleLogoutAll() {
+  try {
+    await logoutAllRequest()
+  } catch (error) {
+    toast(error.message || '退出所有设备失败', { tone: 'danger' })
+    return
+  }
+  resetToAnonymous()
+  toast('已退出所有设备', { tone: 'success' })
+}
+
+function resetToAnonymous() {
+  abortActiveStream()
+  sessions.value = []
+  messages.value = []
+  currentThreadId.value = null
+  interruptData.value = null
+  resumeError.value = ''
+  draft.value = ''
+  showProcurement.value = false
+  showAdmin.value = false
+  showPassword.value = false
+  currentUser.value = null
+  authState.value = 'anonymous'
+}
+
+function handleAuthExpired() {
+  if (authState.value === 'anonymous') return
+  resetToAnonymous()
+  toast('登录已失效，请重新登录', { tone: 'danger' })
+}
+
+async function handleLogout() {
+  try {
+    await logoutRequest()
+  } catch (error) {
+    console.warn('[App] 退出登录请求失败:', error)
+  }
+  resetToAnonymous()
+}
+
 onBeforeUnmount(() => {
+  window.removeEventListener('auth:expired', handleAuthExpired)
   abortController?.abort()
 })
 
@@ -726,6 +838,25 @@ useEventListener(window, 'keydown', (event) => {
 </script>
 
 <style scoped>
+.auth-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 100dvh;
+  background: var(--canvas);
+  color: var(--ink-3);
+  font-size: 13px;
+}
+
+.auth-loading-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: statusPulse 1.2s var(--ease) infinite;
+}
+
 .app-shell {
   display: flex;
   height: 100dvh;

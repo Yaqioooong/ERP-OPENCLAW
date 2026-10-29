@@ -50,6 +50,8 @@ from agent.middleware_config import (
     create_analyst_middleware,
     create_order_middleware,
 )
+from agent.memory.identity import user_namespace_for_runtime
+from agent.memory.user_memory_backend import UserMemoryBackend
 from agent.middlewares.context_injection import ContextInjectionMiddleware
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skills_sync import SkillsSyncMiddleware
@@ -65,11 +67,6 @@ from agent.tools.mcp_client import load_mcp_tools
 from agent.tools.order_guard import build_guarded_order_tools
 from agent.tools.procurement_task_tools import build_procurement_task_tools
 from agent.tools.web_search import web_search
-
-def _user_namespace(rt):
-    context = getattr(rt, "context", None)
-    user_id = getattr(context, "user_id", "guoyaxing")
-    return (user_id,)
 
 def _setup_logging() -> None:
     """配置日志：开发环境输出到控制台，生产环境输出到文件"""
@@ -140,9 +137,9 @@ async def create_main_agent(
     backend = CompositeBackend(
         default=sandbox_backend,
         routes={
-            "/memories/": StoreBackend(
+            "/memories/": UserMemoryBackend(
                 store=STORE,
-                namespace=_user_namespace,
+                namespace=user_namespace_for_runtime,
             ),
             "/persisted-skills/": StoreBackend(
                 store=STORE,
@@ -230,7 +227,7 @@ async def create_main_agent(
         SkillsSyncMiddleware(sandbox_backend),
         UserSkillsRestoreMiddleware(sandbox_backend, SKILLS_STORE_NAMESPACE),
         build_summarization_middleware(backend, SUMMARY_MODEL),
-        MemoryUpdateMiddleware(model=SUMMARY_MODEL),
+        MemoryUpdateMiddleware(model=SUMMARY_MODEL, backend=backend),
         ModelCallLimitMiddleware(run_limit=50),
         ToolCallLimitMiddleware(run_limit=200)
     ]
