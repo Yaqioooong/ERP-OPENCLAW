@@ -62,6 +62,23 @@ def test_plan_rejects_price_not_in_candidates():
     assert not result.passed
     assert any(e.code == "PLAN_PRICE_MISMATCH" for e in result.errors)
 
+
+def test_unknown_delivery_is_not_retried_without_new_information():
+    plan = make_plan(expected_delivery_date=None)
+    candidates = make_candidates(lead_time_days=None)
+    request = make_request(required_by=date(2026, 11, 10))
+
+    result = validate_plan(
+        plan,
+        request,
+        candidates,
+        task_id="TASK-1",
+        today=date(2026, 11, 2),
+    )
+
+    error = next(e for e in result.errors if e.code == "PLAN_DELIVERY_UNKNOWN")
+    assert error.retryable is False
+
 def test_execution_guard_detects_plan_hash_tampering():
     plan = make_plan(quantity=200)
     plan_hash = compute_plan_hash(plan)

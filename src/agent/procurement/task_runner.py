@@ -17,6 +17,7 @@ from langgraph.types import Command
 from agent.procurement import initial_state
 from agent.procurement.config import PROCUREMENT_TIMEZONE, utc_now_in_business_tz
 from agent.procurement.models import TaskRecord, TaskRunResult, TaskStatus
+from agent.procurement.request_normalization import validate_procurement_request
 from agent.procurement.task_events import TaskEventService, TaskEventType
 from agent.procurement.task_repository import TaskRepository
 from agent.schema import ProcurementContext
@@ -36,6 +37,15 @@ def task_thread_id(task_id: str) -> str:
 
 class TaskCheckpointMissing(RuntimeError):
     pass
+
+
+_TERMINAL_STATUSES = {
+    TaskStatus.COMPLETED.value,
+    TaskStatus.REJECTED.value,
+    TaskStatus.FAILED.value,
+    TaskStatus.CANCELLED.value,
+    TaskStatus.ORPHANED.value,
+}
 
 
 class ProcurementTaskRunner:
@@ -62,6 +72,8 @@ class ProcurementTaskRunner:
             request: dict | None = None,
             roles: tuple[str, ...] = (),
     ) -> TaskRunResult:
+        if request is not None:
+            request = validate_procurement_request(request).model_dump(mode="json")
         now = self._now()
         task_id = new_task_id(now)
         thread_id = task_thread_id(task_id)
@@ -157,6 +169,8 @@ class ProcurementTaskRunner:
             roles: tuple[str, ...] = (),
     ) -> TaskRunResult:
         """创建任务后立即返回，图在后台运行；避免嵌套图 interrupt 传回主 Agent。"""
+        if request is not None:
+            request = validate_procurement_request(request).model_dump(mode="json")
         now = self._now()
         task_id = new_task_id(now)
         thread_id = task_thread_id(task_id)
@@ -291,6 +305,17 @@ class ProcurementTaskRunner:
             thread_id=record.thread_id,
         )
         snapshot = await self._graph.aget_state(config)
+
+        has_request_patch = (
+            isinstance(resume_data, dict)
+            and isinstance(resume_data.get("request_patch"), dict)
+        )
+        if has_request_patch and record.status != TaskStatus.NEED_INFO.value:
+            # 补充已成功消费后再次点击提交：返回最新快照，不把旧 patch
+            # 注入审批或执行 interrupt。
+            result = await self._snapshot(task_id, config, context)
+            await self._emit_task_events(result)
+            return result
 
         if not snapshot.values:
             await self._tasks.update_status(
@@ -476,10 +501,56 @@ class ProcurementTaskRunner:
                 data=payload,
             )
 
+    def _terminal_snapshot_result(
+        self,
+        record: TaskRecord,
+        values: dict,
+        thread_id: str,
+    ) -> TaskRunResult:
+        last_error = values.get("last_error")
+        if record.last_error_code or record.last_error_message:
+            last_error = {
+                "code": record.last_error_code,
+                "message": record.last_error_message or "任务执行失败。",
+            }
+        return TaskRunResult(
+            task_id=record.task_id,
+            thread_id=thread_id,
+            status=record.status,
+            current_node=record.current_node,
+            interrupt=None,
+            state_summary={
+                "plan_version": values.get("plan_version"),
+                "approval_status": values.get("approval_status"),
+                "approved_by": values.get("approved_by"),
+                "approval_expires_at": values.get("approval_expires_at"),
+                "analysis_report": values.get("analysis_report"),
+                "analysis_validation": values.get("analysis_validation"),
+                "analysis_sandbox": values.get("analysis_sandbox"),
+                "execution_status": values.get("execution_status"),
+                "order_id": values.get("order_id"),
+                "requires_manual_review": values.get(
+                    "requires_manual_review", False
+                ),
+                "last_error": last_error,
+            },
+            recoverable=False,
+        )
+
     async def _snapshot(self, task_id: str, config: dict, context) -> TaskRunResult:
+        record = await self._tasks.get(task_id)
         snapshot = await self._graph.aget_state(config)
         values = snapshot.values or {}
         current_node = snapshot.next[0] if snapshot.next else None
+
+        # 任务仓储记录后台失败等终态事实。较早的 Checkpoint 可能仍停在
+        # parsing/running；终态一旦落库，读取侧不得把它反向覆盖。
+        if record is not None and record.status in _TERMINAL_STATUSES:
+            return self._terminal_snapshot_result(
+                record,
+                values,
+                config["configurable"]["thread_id"],
+            )
 
         await self._tasks.update_status(
             task_id=task_id,
@@ -489,6 +560,18 @@ class ProcurementTaskRunner:
             error=values.get("last_error"),
             now=self._now(),
         )
+
+        # 再读一次，关闭“读取旧状态后，后台失败恰好落库”的竞态窗口。
+        latest_record = await self._tasks.get(task_id)
+        if (
+                latest_record is not None
+                and latest_record.status in _TERMINAL_STATUSES
+        ):
+            return self._terminal_snapshot_result(
+                latest_record,
+                values,
+                config["configurable"]["thread_id"],
+            )
 
         interrupt_payload = None
         if snapshot.interrupts:

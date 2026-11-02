@@ -88,7 +88,12 @@ class ProcurementRequest(BaseModel):
     warehouse_location: str | None = Field(None, description="收货/目标仓库位置，如“华东仓”“B区-1号库”")
     budget: Decimal | None = Field(None, description="本任务预算上限，CNY")
     required_by: date | None = Field(None, description="要求到货日期")
-    preferred_supplier_id: int | None = Field(None, description="用户指定供应商")
+    preferred_supplier_id: int | None = Field(
+        None, description="已确认的供应商 ID"
+    )
+    preferred_supplier_name: str | None = Field(
+        None, description="用户原始供应商名称，用于追溯和确定性解析"
+    )
     priority: Literal["price", "lead_time", "balanced"] = Field(
         "balanced", description="选商偏好"
     )
@@ -119,6 +124,7 @@ class SupplierOffer(BaseModel):
                       "historical_order", "part_master", "supplier_quote"
                   ] | None = None
     lead_time_days: int | None = None
+    lead_time_source: Literal["actual_delivery", "expected_delivery"] | None = None
     available_quantity: int | None = None
     credit_rating: str | None = None
     data_warnings: list[str] = Field(default_factory=list)
@@ -141,6 +147,7 @@ class PlanItem(BaseModel):
     subtotal: Decimal = Field(ge=0, max_digits=14, decimal_places=2)
     price_source: Literal["historical_order", "part_master", "supplier_quote"]
     lead_time_days: int | None = None
+    lead_time_source: Literal["actual_delivery", "expected_delivery"] | None = None
 
 
 class InventoryGap(BaseModel):

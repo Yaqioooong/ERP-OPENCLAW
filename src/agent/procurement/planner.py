@@ -42,6 +42,7 @@ class DefaultPlanBuilder:
                 subtotal=subtotal,
                 price_source=offer.price_source or "part_master",
                 lead_time_days=offer.lead_time_days,
+                lead_time_source=offer.lead_time_source,
             ))
             if offer.lead_time_days is not None:
                 lead_times.append(offer.lead_time_days)

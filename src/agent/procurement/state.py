@@ -61,7 +61,7 @@ class ProcurementState(TypedDict, total=False):
     updated_at: str
 
     # ---- 恢复 ----
-    retry_from: str | None  # analyze_procurement / verify_order
+    retry_from: str | None  # validate_request / analyze_procurement / verify_order
     failure_stage: str | None  # 失败发生在哪个节点
     resume_count: int  # 恢复次数（防止无限恢复）
     last_checkpoint_id: str | None  # 可选：最近一次快照 ID（诊断）

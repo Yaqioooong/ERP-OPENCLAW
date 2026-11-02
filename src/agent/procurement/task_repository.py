@@ -158,6 +158,7 @@ class PostgresTaskRepository:
                        updated_at = $6,
                        completed_at = COALESCE($7, completed_at)
                  WHERE task_id = $8
+                   AND status <> ALL($9::text[])
                 """,
                 status,
                 current_node,
@@ -167,6 +168,7 @@ class PostgresTaskRepository:
                 timestamp,
                 completed_at,
                 task_id,
+                list(_TERMINAL_STATUSES),
             )
 
     async def mark_resumed(self, task_id: str, now: datetime) -> None:

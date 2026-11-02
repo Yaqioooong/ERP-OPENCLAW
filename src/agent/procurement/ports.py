@@ -1,7 +1,8 @@
 # 用protocol 把LLM 解析，MCP查询，选商，订单执行，审批仓储与图解耦，测试时可全部替换
+from dataclasses import dataclass
 from typing import Protocol, Any
 
-from agent.procurement.models import ProcurementRequest, CandidateSet, ValidationIssue, PlanProposal, ApprovalRecord, \
+from agent.procurement.models import ProcurementRequest, RequestedItem, CandidateSet, ValidationIssue, PlanProposal, ApprovalRecord, \
     ApprovalDecisionResult, ProcurementPlan, OrderExecutionResult, OrderVerificationResult
 
 
@@ -25,7 +26,66 @@ class RequestParser(Protocol):
 
 
 class ProcurementDataProvider(Protocol):
+    async def resolve_part(self, item: RequestedItem) -> "PartResolution":
+        ...
+
     async def collect(self, request: ProcurementRequest) -> CandidateSet:
+        ...
+
+
+@dataclass(frozen=True)
+class PartResolution:
+    id: int
+    name: str
+    code: str | None = None
+
+
+class PartResolutionError(ValueError):
+    """物料无法唯一解析；调用方应转成待补充，而不是任务失败。"""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        candidates: list[dict[str, Any]] = None,
+    ):
+        self.code = code
+        self.message = message
+        self.candidates = candidates or []
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class SupplierResolution:
+    id: int
+    name: str
+    status: int | None = None
+
+
+class SupplierResolutionError(ValueError):
+    """供应商无法唯一解析；调用方应转成待补充，而不是任务崩溃。"""
+
+    def __init__(
+        self,
+        *,
+        code: str,
+        message: str,
+        candidates: list[dict[str, Any]] = None,
+    ):
+        self.code = code
+        self.message = message
+        self.candidates = candidates or []
+        super().__init__(message)
+
+
+class SupplierResolver(Protocol):
+    async def resolve(
+        self,
+        *,
+        supplier_id: int | None,
+        supplier_name: str | None,
+    ) -> SupplierResolution:
         ...
 
 

@@ -1,21 +1,24 @@
-import logging
 import time
 from typing import Callable
 
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
+from agent.log_utils import MyLogger
 from agent.procurement.data_provider import UpstreamUnavailable
 from agent.procurement.dependencies import ProcurementDependencies
 from agent.procurement.models import TaskStatus, ProcurementRequest, ApprovalStatus, ExecutionStatus, ProcurementPlan, \
     OrderExecutionResult, OrderVerificationResult, DecisionType, ApprovalDecision, ApprovalDecisionResult, \
     CandidateSet, ValidationIssue, ApprovalRecord, ToolError
+from agent.procurement.observability import trace_node
 from agent.procurement.rules import validate_request_fields, make_idempotency_key, execution_guard_errors, \
     make_approval_id, compute_plan_hash, validate_plan as validate_plan_rules
+from agent.procurement.ports import PartResolutionError, SupplierResolutionError
+from agent.procurement.request_normalization import ProcurementRequestInputError
 from agent.procurement.state import ProcurementState
 from agent.schema import ProcurementContext
 
-logger = logging.getLogger(__name__)
+logger = MyLogger().get_logger()
 
 
 def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
@@ -118,6 +121,111 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             return _failed("FORBIDDEN", "当前用户无权操作该采购任务。")
         request = ProcurementRequest.model_validate(state.get("request") or {})
         issues = validate_request_fields(request, today=deps.now().date())
+
+        # 名称/编码已经在请求里时，先做确定性解析并回写 part_id。这样用户
+        # 不必知道内部编号；只有解析不唯一或确实找不到时才追问。
+        resolved_items = list(request.items)
+        for index, item in enumerate(resolved_items):
+            if item.part_id is not None:
+                continue
+            if not item.part_name and not item.part_code:
+                # validate_request_fields 已把它归入缺失物料线索。
+                continue
+            try:
+                resolved = await deps.data_provider.resolve_part(item)
+                resolved_items[index] = item.model_copy(
+                    update={"part_id": resolved.id}
+                )
+            except PartResolutionError as exc:
+                issues.append(
+                    ValidationIssue(
+                        code=exc.code,
+                        message=exc.message,
+                        field=f"items[{index}].part_id",
+                        fixable=True,
+                    )
+                )
+            except UpstreamUnavailable as exc:
+                retryable = exc.code in {
+                    "UPSTREAM_UNAVAILABLE",
+                    "UPSTREAM_TIMEOUT",
+                }
+                if not retryable:
+                    return _failed(
+                        "PART_RESOLUTION_FAILED",
+                        f"物料目录解析失败：{exc}",
+                        retryable=False,
+                    )
+                request = request.model_copy(update={"items": resolved_items})
+                return {
+                    "request": request.model_dump(mode="json"),
+                    "missing_fields": [
+                        issue.field
+                        for issue in issues
+                        if issue.fixable and issue.field
+                    ],
+                    "validation_errors": [
+                        issue.model_dump() for issue in issues
+                    ],
+                    "status": TaskStatus.AWAITING_RETRY.value,
+                    "failure_stage": "validate_request",
+                    "retry_from": "validate_request",
+                    "last_error": {
+                        "code": exc.code,
+                        "retryable": True,
+                        "message": str(exc),
+                    },
+                    "node_history": ["validate_request"],
+                    "updated_at": deps.now().isoformat(),
+                }
+        request = request.model_copy(update={"items": resolved_items})
+
+        if (
+                request.preferred_supplier_id is not None
+                or request.preferred_supplier_name is not None
+        ):
+            if deps.supplier_resolver is None:
+                issues.append(
+                    ValidationIssue(
+                        code="SUPPLIER_RESOLVER_UNAVAILABLE",
+                        message="供应商目录当前不可用，请稍后重试。",
+                        field="preferred_supplier_id",
+                        fixable=False,
+                    )
+                )
+            else:
+                try:
+                    resolved = await deps.supplier_resolver.resolve(
+                        supplier_id=request.preferred_supplier_id,
+                        supplier_name=request.preferred_supplier_name,
+                    )
+                    request = request.model_copy(
+                        update={
+                            "preferred_supplier_id": resolved.id,
+                            "preferred_supplier_name": (
+                                request.preferred_supplier_name
+                                or resolved.name
+                            ),
+                        }
+                    )
+                except SupplierResolutionError as exc:
+                    issues.append(
+                        ValidationIssue(
+                            code=exc.code,
+                            message=exc.message,
+                            field="preferred_supplier_id",
+                            fixable=True,
+                        )
+                    )
+                except UpstreamUnavailable as exc:
+                    issues.append(
+                        ValidationIssue(
+                            code=exc.code,
+                            message=str(exc),
+                            field="preferred_supplier_id",
+                            fixable=True,
+                        )
+                    )
         if issues and state.get("clarification_round", 0) >= deps.max_clarification_rounds:
             return _failed(
                 "CLARIFICATION_LIMIT_REACHED",
@@ -126,6 +234,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
 
         if issues:
             return {
+                "request": request.model_dump(mode="json"),
                 "missing_fields": [i.field for i in issues if i.fixable and i.field],
                 "validation_errors": [i.model_dump() for i in issues],
                 "status": TaskStatus.NEED_INFO.value,
@@ -133,6 +242,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
                 "updated_at": deps.now().isoformat(),
             }
         return {
+            "request": request.model_dump(mode="json"),
             "missing_fields": [],
             "validation_errors": [],
             "status": TaskStatus.ANALYZING.value,
@@ -173,6 +283,24 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         previous = ProcurementRequest.model_validate(state.get("request") or {})
         try:
             merged = await deps.request_parser.merge(previous, answer)
+        except ProcurementRequestInputError as exc:
+            return {
+                "request": previous.model_dump(mode="json"),
+                "missing_fields": [item["field"] for item in exc.errors],
+                "validation_errors": [
+                    {
+                        "code": exc.code,
+                        "field": item["field"],
+                        "message": item["message"],
+                        "fixable": True,
+                    }
+                    for item in exc.errors
+                ],
+                "clarification_answer": None,
+                "status": TaskStatus.NEED_INFO.value,
+                "node_history": ["apply_clarification"],
+                "updated_at": deps.now().isoformat(),
+            }
         except Exception as exc:
             return _failed("CLARIFICATION_MERGE_FAILED", f"补充信息无法合并：{exc}")
         return {
@@ -414,9 +542,12 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         approval_id = make_approval_id(state["task_id"], plan.version, actual_hash)
         now = deps.now()
         logger.info(
-            "procurement.approval.prepare task_id=%s approval_id=%s "
-            "plan_version=%s plan_hash=%s total_amount=%s",
-            state["task_id"], approval_id, plan.version, actual_hash,
+            "procurement.approval.prepare task_id={} approval_id={} "
+            "plan_version={} plan_hash={} total_amount={}",
+            state["task_id"],
+            approval_id,
+            plan.version,
+            actual_hash,
             plan.total_amount,
         )
         expires_at = now + deps.approval_ttl
@@ -624,16 +755,21 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         )
         if decision_result == ApprovalDecisionResult.STALE:
             logger.warning(
-                "procurement.approval.stale task_id=%s approval_id=%s",
-                state["task_id"], approval_id,
+                "procurement.approval.stale task_id={} approval_id={}",
+                state["task_id"],
+                approval_id,
             )
             return _failed("APPROVAL_STALE", "审批记录状态已变化，不能重复使用。")
         # APPLIED / ALREADY_APPLIED 都继续：后者是节点重放时的幂等结果。
         logger.info(
-            "procurement.approval.decided task_id=%s approval_id=%s "
-            "decision=%s status=%s decided_by=%s outcome=%s",
-            state["task_id"], approval_id, decision.decision.value,
-            target_status, runtime.context.user_id, decision_result.value,
+            "procurement.approval.decided task_id={} approval_id={} "
+            "decision={} status={} decided_by={} outcome={}",
+            state["task_id"],
+            approval_id,
+            decision.decision.value,
+            target_status,
+            runtime.context.user_id,
+            decision_result.value,
         )
 
         now_iso = deps.now().isoformat()
@@ -710,10 +846,14 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         key = make_idempotency_key(state["task_id"], plan.version, plan_hash)
         started = time.monotonic()
         logger.info(
-            "procurement.order.create.start task_id=%s approval_id=%s "
-            "plan_version=%s idempotency_key=%s total_amount=%s items=%s",
-            state["task_id"], state.get("approval_id"), plan.version, key,
-            plan.total_amount, len(plan.items),
+            "procurement.order.create.start task_id={} approval_id={} "
+            "plan_version={} idempotency_key={} total_amount={} items={}",
+            state["task_id"],
+            state.get("approval_id"),
+            plan.version,
+            key,
+            plan.total_amount,
+            len(plan.items),
         )
 
         try:
@@ -743,9 +883,11 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             )
 
         logger.info(
-            "procurement.order.create.result task_id=%s status=%s order_id=%s "
-            "error=%s duration_ms=%s",
-            state["task_id"], result.status.value, result.order_id,
+            "procurement.order.create.result task_id={} status={} order_id={} "
+            "error={} duration_ms={}",
+            state["task_id"],
+            result.status.value,
+            result.order_id,
             result.error.code if result.error else None,
             int((time.monotonic() - started) * 1000),
         )
@@ -791,8 +933,9 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
 
         started = time.monotonic()
         logger.info(
-            "procurement.order.verify.start task_id=%s order_id=%s",
-            state["task_id"], state.get("order_id"),
+            "procurement.order.verify.start task_id={} order_id={}",
+            state["task_id"],
+            state.get("order_id"),
         )
         try:
             if deps.order_reconciler is not None:
@@ -816,9 +959,11 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             )
 
         logger.info(
-            "procurement.order.verify.result task_id=%s status=%s order_id=%s "
-            "manual_review=%s error=%s duration_ms=%s",
-            state["task_id"], result.status.value, result.order_id,
+            "procurement.order.verify.result task_id={} status={} order_id={} "
+            "manual_review={} error={} duration_ms={}",
+            state["task_id"],
+            result.status.value,
+            result.order_id,
             result.requires_manual_review,
             result.error.code if result.error else None,
             int((time.monotonic() - started) * 1000),
@@ -941,7 +1086,11 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         if action == "retry":
             if state.get("retry_count", 0) >= deps.max_task_resumes:
                 return _failed("RETRY_LIMIT_REACHED", "恢复次数超过上限，请重新发起任务。")
-            if state.get("retry_from") not in {"analyze_procurement", "verify_order"}:
+            if state.get("retry_from") not in {
+                "validate_request",
+                "analyze_procurement",
+                "verify_order",
+            }:
                 return _failed("RETRY_TARGET_INVALID", "恢复目标节点无效，请重新发起任务。")
             return {
                 "retry_action": "retry",
@@ -961,7 +1110,7 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
             "updated_at": deps.now().isoformat(),
         }
 
-    return {
+    nodes = {
         "authorize": authorize,
         "parse_request": parse_request,
         "validate_request": validate_request,
@@ -980,4 +1129,8 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         "retry_gate": retry_gate,
         "cancel_task": cancel_task,
         "fail_task": fail_task,
+    }
+    return {
+        name: trace_node(name, fn)
+        for name, fn in nodes.items()
     }

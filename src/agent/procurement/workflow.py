@@ -3,6 +3,7 @@ from langgraph.graph import StateGraph
 
 from agent.procurement.dependencies import ProcurementDependencies
 from agent.procurement.nodes import build_nodes
+from agent.procurement.observability import trace_route
 from agent.procurement.routing import after_authorize, after_validate_request, after_parse_request, \
     after_apply_clarification, after_analyze, after_validate_plan, after_prepare_approval, after_request_approval, \
     after_finalize_approval, after_create_order, after_verify_order, after_retry_gate
@@ -19,48 +20,64 @@ def build_procurement_graph(deps: ProcurementDependencies) -> StateGraph:
         builder.add_node(name, fn)
 
     builder.add_edge(START, "authorize")
-    builder.add_conditional_edges(
+    def add_conditional_edges(source, path, destinations):
+        builder.add_conditional_edges(
+            source,
+            trace_route(source, path, destinations),
+            destinations,
+        )
+
+    add_conditional_edges(
         "authorize",
         after_authorize,
         {"parse": "parse_request", "fail": "fail_task"}
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "parse_request",
         after_parse_request,
         {"validate_request": "validate_request", "fail": "fail_task"}
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "validate_request",
         after_validate_request,
-        {"ask_user": "ask_user", "analyze": "analyze_procurement", "fail": "fail_task"}
+        {
+            "ask_user": "ask_user",
+            "analyze": "analyze_procurement",
+            "retry": "retry_gate",
+            "fail": "fail_task",
+        }
     )
     builder.add_edge("ask_user", "apply_clarification")
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "apply_clarification",
         after_apply_clarification,
-        {"validate_request": "validate_request", "fail": "fail_task"}
+        {
+            "validate_request": "validate_request",
+            "ask_user": "ask_user",
+            "fail": "fail_task",
+        }
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "analyze_procurement",
         after_analyze,
         {"validate_plan": "validate_plan", "fail": "fail_task", "retry": "retry_gate"}
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "validate_plan",
         after_validate_plan,
         {"prepare_approval": "prepare_approval", "analyze": "analyze_procurement", "fail": "fail_task"}
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "prepare_approval",
         after_prepare_approval,
         {"request_approval": "request_approval", "fail": "fail_task"}
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "request_approval",
         after_request_approval,
         {"finalize": "finalize_approval", "fail": "fail_task"},
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "finalize_approval",
         after_finalize_approval,
         {
@@ -70,21 +87,22 @@ def build_procurement_graph(deps: ProcurementDependencies) -> StateGraph:
             "fail": "fail_task"
         },
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "create_order",
         after_create_order,
         {"verify": "verify_order", "pending": "pending_execution", "fail": "fail_task"}
     )
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "verify_order",
         after_verify_order,
         {"complete": "complete_task", "fail": "fail_task", "retry": "retry_gate"}
     )
 
-    builder.add_conditional_edges(
+    add_conditional_edges(
         "retry_gate",
         after_retry_gate,
         {
+            "validate_request": "validate_request",
             "analyze_procurement": "analyze_procurement",
             "verify_order": "verify_order",
             "cancel": "cancel_task",

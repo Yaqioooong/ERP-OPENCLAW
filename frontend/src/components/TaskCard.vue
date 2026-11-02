@@ -71,6 +71,7 @@ const STATUS = {
   failed: '失败',
   rejected: '已拒绝',
   cancelled: '已取消',
+  orphaned: '已失联',
 }
 
 const statusLabel = computed(() => STATUS[status.value] || '已创建')
@@ -85,7 +86,7 @@ const pulse = computed(() =>
 
 const tone = computed(() => {
   if (status.value === 'completed') return 'is-done'
-  if (['failed', 'rejected', 'cancelled'].includes(status.value)) return 'is-error'
+  if (['failed', 'rejected', 'cancelled', 'orphaned'].includes(status.value)) return 'is-error'
   if (awaiting.value || pending.value) return 'is-pending'
   return 'is-running'
 })
@@ -108,10 +109,12 @@ const summary = computed(() => {
       data?.state_summary?.order_id || data?.state_summary?.order_number
     return orderId ? `订单已创建：${orderId}` : '采购流程已完成'
   }
-  if (status.value === 'failed' || status.value === 'rejected' || status.value === 'cancelled') {
+  if (
+    ['failed', 'rejected', 'cancelled', 'orphaned'].includes(status.value)
+  ) {
     return (
       data?.interrupt?.last_error?.message ||
-      data?.state_summary?.error?.message ||
+      data?.state_summary?.last_error?.message ||
       '任务已结束，点击查看详情'
     )
   }
@@ -126,6 +129,7 @@ const summary = computed(() => {
 const actionLabel = computed(() => {
   if (awaiting.value || pending.value) return '打开处理'
   if (status.value === 'completed') return '查看结果'
+  if (tone.value === 'is-error') return '查看原因'
   return '查看进度'
 })
 </script>

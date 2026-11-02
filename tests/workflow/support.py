@@ -19,6 +19,8 @@ from agent.procurement.models import (
     ToolError,
 )
 from agent.procurement.planner import DefaultPlanBuilder
+from agent.procurement.ports import PartResolution
+from agent.procurement.request_normalization import merge_procurement_request
 from agent.procurement.state import initial_state
 from agent.schema import ProcurementContext
 from tests.factories import make_candidates
@@ -80,23 +82,21 @@ class StaticRequestParser:
 
     async def merge(self, previous, answer):
         if isinstance(answer, dict) and isinstance(answer.get("request_patch"), dict):
-            data = previous.model_dump(mode="json")
-            _deep_merge(data, answer["request_patch"])
-            return ProcurementRequest.model_validate(data)
+            return merge_procurement_request(previous, answer["request_patch"])
         return previous.model_copy(deep=True)
-
-
-def _deep_merge(base: dict, patch: dict) -> None:
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value
 
 
 class StaticDataProvider:
     def __init__(self, candidates: CandidateSet | None = None):
         self._candidates = candidates or make_candidates()
+
+    async def resolve_part(self, item: RequestedItem):
+        part_id = item.part_id or self._candidates.inventory[0].part_id
+        return PartResolution(
+            id=part_id,
+            name=item.part_name or self._candidates.inventory[0].part_name,
+            code=item.part_code,
+        )
 
     async def collect(self, request: ProcurementRequest) -> CandidateSet:
         return self._candidates.model_copy(deep=True)
@@ -105,8 +105,10 @@ class StaticDataProvider:
 class StaticPlanProposer:
     def __init__(self, supplier_id: int = 4):
         self._supplier_id = supplier_id
+        self.requests = []
 
     async def propose(self, request, candidates, *, feedback):
+        self.requests.append(request)
         items = [
             PlanProposalItem(part_id=item.part_id, quantity=item.quantity)
             for item in request.items
@@ -166,6 +168,7 @@ def make_test_deps(
         proposer=None,
         execution_enabled: bool = False,
         require_distinct_approver: bool = False,
+        supplier_resolver=None,
 ) -> ProcurementDependencies:
     return ProcurementDependencies(
         request_parser=parser or StaticRequestParser(),
@@ -177,4 +180,5 @@ def make_test_deps(
         now=lambda: FIXED_NOW,
         execution_enabled=execution_enabled,
         require_distinct_approver=require_distinct_approver,
+        supplier_resolver=supplier_resolver,
     )

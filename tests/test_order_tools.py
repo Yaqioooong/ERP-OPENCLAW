@@ -1,6 +1,9 @@
+from datetime import date
+
 import httpx
 import pytest
 
+from mcp_server.contracts import normalize_order_detail
 from mcp_server.mcp_tools_bean import OrderCreateInput, OrderDetailItem
 from mcp_server.tools.order_tools import create_order_core
 
@@ -18,6 +21,21 @@ class FakeRequestContext:
 class FakeContext:
     def __init__(self, client):
         self.request_context = FakeRequestContext(client)
+
+
+def test_normalize_order_detail_preserves_expected_delivery_date():
+    record = normalize_order_detail(
+        {
+            "partId": 65,
+            "supplierId": 31,
+            "orderTime": "2024-01-01T00:00:00",
+            "expectedDeliveryDate": "2024-01-09",
+            "actualDeliveryDate": None,
+        }
+    )
+
+    assert record.expected_delivery_date == date(2024, 1, 9)
+    assert record.actual_delivery_date is None
 
 
 @pytest.mark.anyio

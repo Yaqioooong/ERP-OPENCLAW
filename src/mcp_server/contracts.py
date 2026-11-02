@@ -89,6 +89,7 @@ class OrderDetailRecord(ContractModel):
     supplier_status: int | None = None
     credit_rating: str | None = None
     order_time: datetime | None = None
+    expected_delivery_date: date | None = None
     actual_delivery_date: date | None = None
 
 
@@ -243,6 +244,9 @@ def normalize_order_detail(raw: Any) -> OrderDetailRecord:
         ),
         credit_rating=pick(supplier, "creditRating", "credit_rating"),
         order_time=as_datetime(pick(raw, "orderTime", "order_time")),
+        expected_delivery_date=as_date(
+            pick(raw, "expectedDeliveryDate", "expected_delivery_date")
+        ),
         actual_delivery_date=as_date(
             pick(raw, "actualDeliveryDate", "actual_delivery_date")
         ),

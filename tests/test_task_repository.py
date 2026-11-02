@@ -104,3 +104,27 @@ async def test_mark_resumed_and_list(db):
     )
     recoverable = await repo.list_recoverable()
     assert {task.task_id for task in recoverable} == {"TASK-2"}
+
+
+@pytest.mark.anyio
+async def test_terminal_status_cannot_be_overwritten_by_stale_snapshot(db):
+    repo = PostgresTaskRepository(db)
+    await repo.setup()
+    await repo.create(make_record())
+    await repo.update_status(
+        task_id="TASK-1",
+        status="failed",
+        error={"code": "TASK_START_FAILED", "message": "supplier id invalid"},
+        now=NOW + timedelta(minutes=1),
+    )
+
+    await repo.update_status(
+        task_id="TASK-1",
+        status="parsing",
+        now=NOW + timedelta(minutes=2),
+    )
+
+    record = await repo.get("TASK-1")
+    assert record.status == "failed"
+    assert record.last_error_code == "TASK_START_FAILED"
+    assert record.last_error_message == "supplier id invalid"

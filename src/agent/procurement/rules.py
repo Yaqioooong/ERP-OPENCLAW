@@ -3,11 +3,15 @@ import json
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
+from sqlalchemy.dialects.sqlite import JSONB
+
+from agent.log_utils import MyLogger
 from agent.procurement.config import PROCUREMENT_MAX_QUANTITY, PROCUREMENT_ACTIVE_SUPPLIER_STATUSES
 from agent.procurement.models import ValidationIssue, ProcurementRequest, ProcurementPlan, CandidateSet, \
     PlanValidationResult
 
 MONEY = Decimal("0.01")
+logger = MyLogger().get_logger()
 
 
 def q2(value: Decimal) -> Decimal:
@@ -332,7 +336,6 @@ def validate_plan(
                     "PLAN_DELIVERY_UNKNOWN",
                     "用户指定了要求到货日期，但无法推算交期，不能确认是否满足。",
                     field="expected_delivery_date",
-                    retryable=True,
                 )
             )
         else:
@@ -377,6 +380,14 @@ def validate_plan(
             )
 
     plan_hash = compute_plan_hash(plan)
+    logger.info(
+        "procurement.plan.validation task_id={} passed={} "
+        "error_codes={} warning_codes={}",
+        task_id,
+        not errors,
+        ",".join(error.code for error in errors) or "-",
+        ",".join(warning.code for warning in warnings) or "-",
+    )
     return PlanValidationResult(
         passed=not errors,
         errors=errors,

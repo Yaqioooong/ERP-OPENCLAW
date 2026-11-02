@@ -13,13 +13,19 @@ def after_parse_request(state) -> str:
 def after_validate_request(state) -> str:
     if state.get("status") == TaskStatus.FAILED.value:
         return "fail"
+    if state.get("status") == TaskStatus.AWAITING_RETRY.value:
+        return "retry"
     if state.get("status") == TaskStatus.NEED_INFO.value:
         return "ask_user"
     return "analyze"
 
 
 def after_apply_clarification(state) -> str:
-    return "fail" if state.get("status") == TaskStatus.FAILED.value else "validate_request"
+    if state.get("status") == TaskStatus.FAILED.value:
+        return "fail"
+    if state.get("status") == TaskStatus.NEED_INFO.value:
+        return "ask_user"
+    return "validate_request"
 
 
 def after_analyze(state) -> str:
@@ -33,7 +39,7 @@ def after_analyze(state) -> str:
 def after_retry_gate(state) -> str:
     if state.get("retry_action") == "retry":
         target = state.get("retry_from")
-        if target in {"analyze_procurement", "verify_order"}:
+        if target in {"validate_request", "analyze_procurement", "verify_order"}:
             return target
         return "fail"
     if state.get("retry_action") == "cancel":

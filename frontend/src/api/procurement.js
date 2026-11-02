@@ -10,6 +10,23 @@ async function parseError(response, fallback) {
   try {
     const data = await response.json()
     if (typeof data?.detail === 'string') return new Error(data.detail)
+    const detail = data?.detail
+    if (detail && typeof detail === 'object') {
+      const fieldErrors = Array.isArray(detail.errors) ? detail.errors : []
+      const summary = fieldErrors
+        .map((item) => {
+          const field = item?.field ? `${item.field}：` : ''
+          return `${field}${item?.message || ''}`.trim()
+        })
+        .filter(Boolean)
+        .join('；')
+      const exception = new Error(
+        summary || detail.message || detail.code || `${fallback}: ${response.status}`,
+      )
+      exception.code = detail.code || ''
+      exception.fieldErrors = fieldErrors
+      return exception
+    }
   } catch {
     /* ignore */
   }

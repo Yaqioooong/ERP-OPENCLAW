@@ -23,7 +23,7 @@ from agent.procurement.order_reconciliation import OrderReconciler
 from agent.procurement.parser import LLMRequestParser
 from agent.procurement.planner import DefaultPlanBuilder
 from agent.procurement.ports import RequestParser, ProcurementDataProvider, PlanProposer, ApprovalRepository, \
-    OrderExecutionService
+    OrderExecutionService, SupplierResolver
 from agent.procurement.reconciliation_worker import ReconciliationWorker
 from agent.procurement.task_events import (
     InMemoryTaskEventBroker,
@@ -75,6 +75,7 @@ class ProcurementDependencies:
     order_reconciler: OrderReconciler | None = None
     require_distinct_approver: bool = PROCUREMENT_REQUIRE_DISTINCT_APPROVER
     analysis_pipeline: TrustedAnalysisPipeline | None = None
+    supplier_resolver: SupplierResolver | None = None
 
 
 async def get_database() -> Database:
@@ -136,12 +137,14 @@ async def build_production_dependencies() -> ProcurementDependencies:
         sandbox_verifier=sandbox_verifier,
     )
 
+    procurement_data_provider = McpProcurementDataProvider(
+        tools,
+        active_supplier_statuses=PROCUREMENT_ACTIVE_SUPPLIER_STATUSES,
+    )
+
     return ProcurementDependencies(
         request_parser=LLMRequestParser(SUMMARY_MODEL),
-        data_provider=McpProcurementDataProvider(
-            tools,
-            active_supplier_statuses=PROCUREMENT_ACTIVE_SUPPLIER_STATUSES,
-        ),
+        data_provider=procurement_data_provider,
         plan_proposer=DeterministicPlanProposer(),
         plan_builder=DefaultPlanBuilder(),
         approval_repository=approval_repository,
@@ -151,6 +154,7 @@ async def build_production_dependencies() -> ProcurementDependencies:
         order_reconciler=reconciler,
         require_distinct_approver=PROCUREMENT_REQUIRE_DISTINCT_APPROVER,
         analysis_pipeline=analysis_pipeline,
+        supplier_resolver=procurement_data_provider,
     )
 
 

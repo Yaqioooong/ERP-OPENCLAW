@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from statistics import median
@@ -16,6 +17,17 @@ from agent.procurement.models import (
     InventorySnapshot,
     ProcurementRequest,
     SupplierOffer,
+)
+from agent.procurement.ports import (
+    PartResolution,
+    PartResolutionError,
+    SupplierResolution,
+    SupplierResolutionError,
+)
+
+
+_PART_SEARCH_TOKEN = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._/+~-]*|[\u3400-\u9fff]+"
 )
 
 
@@ -173,6 +185,41 @@ def _normalize_part(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _part_search_terms(value: str) -> list[str]:
+    """生成整句与关键词查询；保持顺序稳定并优先产品型号。"""
+    text = " ".join(str(value or "").split())
+    if not text:
+        return []
+
+    terms = [text[:100]]
+    tokens = [
+        token
+        for token in _PART_SEARCH_TOKEN.findall(text)
+        if len(token) >= 2
+    ]
+    tokens.sort(
+        key=lambda token: (
+            not (
+                any(char.isdigit() for char in token)
+                and any(char.isalpha() for char in token)
+            ),
+            not token.isascii(),
+            -len(token),
+        )
+    )
+
+    seen = {terms[0].casefold()}
+    for token in tokens:
+        normalized = token[:100]
+        key = normalized.casefold()
+        if key not in seen:
+            seen.add(key)
+            terms.append(normalized)
+        if len(terms) >= 6:
+            break
+    return terms
+
+
 def _normalize_order_detail(
         detail: dict[str, Any], *, fallback_part: dict[str, Any]
 ) -> dict[str, Any]:
@@ -191,14 +238,25 @@ def _normalize_order_detail(
     )
 
     order_time = _parse_datetime(_pick(detail, "orderTime", "order_time"))
+    expected_delivery = _parse_datetime(
+        _pick(detail, "expectedDeliveryDate", "expected_delivery_date")
+    )
     actual_delivery = _parse_datetime(
         _pick(detail, "actualDeliveryDate", "actual_delivery_date")
     )
     lead_time_days = None
-    if order_time and actual_delivery:
-        days = (actual_delivery - order_time).days
-        if days >= 0:
-            lead_time_days = days
+    lead_time_source = None
+    if order_time:
+        if actual_delivery:
+            days = (actual_delivery - order_time).days
+            if days >= 0:
+                lead_time_days = days
+                lead_time_source = "actual_delivery"
+        if lead_time_days is None and expected_delivery:
+            days = (expected_delivery - order_time).days
+            if days >= 0:
+                lead_time_days = days
+                lead_time_source = "expected_delivery"
 
     return {
         "supplier_id": (
@@ -218,6 +276,7 @@ def _normalize_order_detail(
         "unit_price": _to_decimal(_pick(detail, "unitPrice", "unit_price")),
         "order_time": order_time,
         "lead_time_days": lead_time_days,
+        "lead_time_source": lead_time_source,
     }
 
 
@@ -227,20 +286,217 @@ class McpProcurementDataProvider:
         self._active = active_supplier_statuses
 
     async def collect(self, request: ProcurementRequest) -> CandidateSet:
-        parts = [await self._resolve_part(item) for item in request.items]
+        parts = []
+        for item in request.items:
+            try:
+                parts.append(await self._resolve_part(item))
+            except PartResolutionError as exc:
+                # collect 是执行层入口；正常流程已在 validate_request 处理业务
+                # 错误。保留 UpstreamUnavailable 兼容旧调用方和异常边界。
+                raise UpstreamUnavailable(str(exc), code=exc.code) from exc
         inventory = await self._inventory(request, parts)
         offers = await self._offers(request, parts, inventory)
-        return CandidateSet(offers=offers, inventory=inventory)
+        warnings = list(
+            dict.fromkeys(
+                warning
+                for offer in offers
+                for warning in offer.data_warnings
+            )
+        )
+        return CandidateSet(
+            offers=offers,
+            inventory=inventory,
+            data_warnings=warnings,
+        )
+
+    async def resolve_part(self, item) -> PartResolution:
+        """把名称、编码或 ID 解析成唯一物料，供请求校验阶段回写。"""
+        part = await self._resolve_part(item)
+        code = str(part.get("code") or "").strip() or None
+        return PartResolution(
+            id=part["id"],
+            name=part["name"],
+            code=code,
+        )
+
+    async def resolve(
+        self,
+        *,
+        supplier_id: int | None,
+        supplier_name: str | None,
+    ) -> SupplierResolution:
+        """按 ID 或名称把供应商解析成唯一业务主体。
+
+        名称只接受目录中的精确匹配；模糊查询命中多项时保留候选并要求用户
+        选择，不把品牌名或物料默认供应商当作业务主体。
+        """
+        if supplier_id is not None:
+            try:
+                data = await self._call_tool(
+                    "supplier_get", {"supplier_id": supplier_id}
+                )
+            except UpstreamUnavailable as exc:
+                if exc.code in {"MCP_TOOL_MISSING", "UPSTREAM_UNAVAILABLE"}:
+                    raise
+                raise SupplierResolutionError(
+                    code="SUPPLIER_NOT_FOUND",
+                    message=f"供应商 {supplier_id} 无法读取。",
+                ) from exc
+            if not isinstance(data, dict) or not data:
+                raise SupplierResolutionError(
+                    code="SUPPLIER_NOT_FOUND",
+                    message=f"供应商 {supplier_id} 不存在。",
+                )
+            return self._supplier_resolution(data, fallback_id=supplier_id)
+
+        name = str(supplier_name or "").strip()
+        if not name:
+            raise SupplierResolutionError(
+                code="SUPPLIER_NOT_PROVIDED",
+                message="未提供可解析的供应商。",
+            )
+
+        records = await self._call_tool(
+            "supplier_query", {"params": {"name": name}}
+        )
+        candidates = [
+            normalized
+            for record in _as_list(records)
+            if isinstance(record, dict)
+            for normalized in [self._normalize_supplier_record(record)]
+            if normalized["id"] is not None
+        ]
+        exact = [
+            candidate
+            for candidate in candidates
+            if str(candidate["name"]).strip().casefold() == name.casefold()
+        ]
+
+        if not exact and len(candidates) == 1:
+            exact = candidates
+
+        if not exact:
+            if len(candidates) > 1:
+                choices = "；".join(
+                    f"{item['id']}-{item['name']}" for item in candidates
+                )
+                raise SupplierResolutionError(
+                    code="SUPPLIER_AMBIGUOUS",
+                    message=(
+                        f"供应商“{name}”匹配到多个主体，请填写供应商 ID："
+                        f"{choices}。"
+                    ),
+                    candidates=[
+                        {"id": item["id"], "name": item["name"]}
+                        for item in candidates
+                    ],
+                )
+            raise SupplierResolutionError(
+                code="SUPPLIER_NOT_FOUND",
+                message=f"未找到名称精确匹配“{name}”的供应商。",
+                candidates=candidates,
+            )
+        if len(exact) > 1:
+            choices = "；".join(
+                f"{item['id']}-{item['name']}" for item in exact
+            )
+            raise SupplierResolutionError(
+                code="SUPPLIER_AMBIGUOUS",
+                message=f"供应商“{name}”匹配到多个主体，请填写供应商 ID：{choices}。",
+                candidates=[
+                    {"id": item["id"], "name": item["name"]}
+                    for item in exact
+                ],
+            )
+
+        item = exact[0]
+        return self._supplier_resolution(item, fallback_id=item["id"])
+
+    @staticmethod
+    def _normalize_supplier_record(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": _to_int(_pick(record, "id", "supplierId", "supplier_id")),
+            "name": str(
+                _pick(record, "name", "supplierName", "supplier_name") or ""
+            ).strip(),
+            "status": _to_int(_pick(record, "status", "supplierStatus")),
+        }
+
+    def _supplier_resolution(
+        self,
+        record: dict[str, Any],
+        *,
+        fallback_id: int,
+    ) -> SupplierResolution:
+        item = self._normalize_supplier_record(record)
+        supplier_id = item["id"] or fallback_id
+        status = item["status"]
+        if status is not None and status not in self._active:
+            raise SupplierResolutionError(
+                code="SUPPLIER_UNAVAILABLE",
+                message=f"供应商 {supplier_id} 当前状态不可用。",
+            )
+        return SupplierResolution(
+            id=supplier_id,
+            name=item["name"] or f"SUP-{supplier_id}",
+            status=status,
+        )
+
+    async def _search_parts(self, name: str) -> list[dict[str, Any]]:
+        """用整句查询并仅在需要时拆词，按命中次数收敛候选。"""
+        terms = _part_search_terms(name)
+        if not terms:
+            return []
+
+        candidates: dict[int, dict[str, Any]] = {}
+        hit_counts: dict[int, int] = {}
+        for index, term in enumerate(terms):
+            records = await self._call_tool("part_search", {"name": term})
+            found = [
+                part
+                for part in (_normalize_part(record) for record in _as_list(records))
+                if part["id"] is not None
+            ]
+            if index == 0 and len(found) == 1:
+                return found
+            for part in found:
+                part_id = part["id"]
+                candidates[part_id] = part
+                hit_counts[part_id] = hit_counts.get(part_id, 0) + 1
+
+        if not candidates:
+            return []
+        best_hits = max(hit_counts.values())
+        return [
+            part
+            for part_id, part in candidates.items()
+            if hit_counts[part_id] == best_hits
+        ]
 
     async def _resolve_part(self, item) -> dict[str, Any]:
         candidates: list[dict[str, Any]] = []
 
-        if item.part_name:
-            records = await self._call_tool("part_search", {"name": item.part_name})
-            candidates = [_normalize_part(r) for r in _as_list(records)]
-            candidates = [p for p in candidates if p["id"] is not None]
-            if item.part_id is not None:
-                candidates = [p for p in candidates if p["id"] == item.part_id]
+        if item.part_id is not None:
+            # 用户给出的稳定 ID 是权威标识；名称只用于描述和追溯，不能因为
+            # 模糊搜索的词序差异阻断已确认物料。
+            record = await self._call_tool(
+                "part_get", {"part_id": item.part_id}
+            )
+            candidates = [_normalize_part(record)] if record else []
+            candidates = [p for p in candidates if p["id"] == item.part_id]
+            if candidates and item.part_code:
+                actual_code = str(candidates[0].get("code") or "").strip()
+                provided_code = str(item.part_code).strip()
+                if actual_code and actual_code.casefold() != provided_code.casefold():
+                    raise PartResolutionError(
+                        code="PART_CODE_MISMATCH",
+                        message=(
+                            f"物料 ID {item.part_id} 对应编码 {actual_code}，"
+                            f"与请求中的编码 {provided_code} 不一致；请确认物料 ID 或编码。"
+                        ),
+                    )
+        elif item.part_name:
+            candidates = await self._search_parts(item.part_name)
             if item.part_code:
                 code = str(item.part_code).strip().lower()
                 candidates = [
@@ -268,27 +524,41 @@ class McpProcurementDataProvider:
                 p for p in candidates
                 if str(p.get("code") or "").strip().lower() == code
             ]
-        elif item.part_id is not None:
-            record = await self._call_tool(
-                "part_get", {"part_id": item.part_id}
-            )
-            candidates = [_normalize_part(record)] if record else []
-            candidates = [p for p in candidates if p["id"] is not None]
         else:
-            raise UpstreamUnavailable(
-                "PART_IDENTIFIER_MISSING：缺少物料名称、编码或 ID。",
+            raise PartResolutionError(
                 code="PART_IDENTIFIER_MISSING",
+                message="缺少物料名称、编码或 ID。",
             )
 
         if not candidates:
-            raise UpstreamUnavailable(
-                f"PART_NOT_FOUND：没有找到物料 {item.part_name or item.part_code or item.part_id}。",
+            raise PartResolutionError(
                 code="PART_NOT_FOUND",
+                message=(
+                    "没有找到物料 "
+                    f"{item.part_name or item.part_code or item.part_id}；"
+                    "请确认名称或编码，或填写物料 ID。"
+                ),
             )
         if len(candidates) > 1:
-            raise UpstreamUnavailable(
-                f"PART_AMBIGUOUS：物料 {item.part_name or item.part_code} 匹配到多条记录。",
+            choices = "；".join(
+                f"{part['id']}-{part['name']}"
+                + (f"（{part['code']}）" if part.get("code") else "")
+                for part in candidates
+            )
+            raise PartResolutionError(
                 code="PART_AMBIGUOUS",
+                message=(
+                    f"物料“{item.part_name or item.part_code}”匹配到多个记录，"
+                    f"请填写物料 ID：{choices}。"
+                ),
+                candidates=[
+                    {
+                        "id": part["id"],
+                        "name": part["name"],
+                        "code": part.get("code"),
+                    }
+                    for part in candidates
+                ],
             )
         return candidates[0]
 
@@ -417,6 +687,17 @@ class McpProcurementDataProvider:
                     },
                 )
 
+            for supplier_id, supplier in suppliers.items():
+                detail = await self._supplier_detail(supplier_id)
+                if not detail:
+                    continue
+                if detail.get("name"):
+                    supplier["name"] = detail["name"]
+                if detail.get("status") is not None:
+                    supplier["status"] = detail["status"]
+                if detail.get("credit"):
+                    supplier["credit"] = detail["credit"]
+
             snapshot = next(
                 (s for s in inventory if s.part_id == part["id"]), None
             )
@@ -448,6 +729,22 @@ class McpProcurementDataProvider:
                 lead_time_days = (
                     int(round(median(lead_times))) if lead_times else None
                 )
+                lead_time_sources = {
+                    row["lead_time_source"]
+                    for row in rows
+                    if row.get("lead_time_source") is not None
+                }
+                if "expected_delivery" in lead_time_sources:
+                    lead_time_source = "expected_delivery"
+                elif lead_time_sources == {"actual_delivery"}:
+                    lead_time_source = "actual_delivery"
+                else:
+                    lead_time_source = None
+                data_warnings = []
+                if lead_time_source == "expected_delivery":
+                    data_warnings.append(
+                        "历史实际交期缺失，交期按历史预计到货日期估算。"
+                    )
 
                 offers.append(
                     SupplierOffer(
@@ -459,8 +756,10 @@ class McpProcurementDataProvider:
                         unit_price=unit_price,
                         price_source=price_source,
                         lead_time_days=lead_time_days,
+                        lead_time_source=lead_time_source,
                         available_quantity=available_quantity,
                         credit_rating=supplier.get("credit"),
+                        data_warnings=data_warnings,
                     )
                 )
 

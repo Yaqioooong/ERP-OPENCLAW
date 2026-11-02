@@ -13,6 +13,10 @@ from typing import Any
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent.procurement.models import ProcurementRequest
+from agent.procurement.request_normalization import (
+    merge_procurement_request,
+    validate_procurement_request,
+)
 
 _SYSTEM_PROMPT = """你是 ERP 采购需求解析器。请从用户输入中提取结构化采购条件。
 
@@ -105,7 +109,7 @@ class LLMRequestParser:
             try:
                 message = await self._model.ainvoke(messages)
                 text = _content_to_text(getattr(message, "content", message))
-                return ProcurementRequest.model_validate(_extract_json(text))
+                return validate_procurement_request(_extract_json(text))
             except Exception as exc:
                 last_error = exc
                 if attempt == 0:
@@ -127,9 +131,7 @@ class LLMRequestParser:
     ) -> ProcurementRequest:
         # 如果前端直接给 request_patch，优先做确定性合并，避免再调一次模型
         if isinstance(answer, dict) and isinstance(answer.get("request_patch"), dict):
-            data = previous.model_dump(mode="json")
-            _deep_merge(data, answer["request_patch"])
-            return ProcurementRequest.model_validate(data)
+            return merge_procurement_request(previous, answer["request_patch"])
 
         # 自由文本补充，用模型合并
         return await self.parse(
@@ -137,11 +139,3 @@ class LLMRequestParser:
             previous=previous.model_dump(mode="json"),
             answer=answer,
         )
-
-
-def _deep_merge(base: dict, patch: dict) -> None:
-    for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(base.get(key), dict):
-            _deep_merge(base[key], value)
-        else:
-            base[key] = value

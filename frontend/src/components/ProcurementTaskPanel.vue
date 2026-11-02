@@ -90,7 +90,17 @@
           <TriangleAlert :size="14" />
           <div>
             <strong>任务未完成</strong>
+            <span v-if="failureCode" class="failure-code">{{ failureCode }}</span>
             <p>{{ failureMessage }}</p>
+            <ul v-if="failureDetails.length" class="failure-details">
+              <li v-for="(detail, index) in failureDetails" :key="`${detail.code}-${index}`">
+                <span v-if="detail.code" class="failure-detail-code">{{ detail.code }}</span>
+                <span>{{ detail.message }}</span>
+              </li>
+            </ul>
+            <button type="button" class="btn btn-ghost btn-sm" @click="$emit('close')">
+              关闭并在对话中重新发起
+            </button>
           </div>
         </div>
 
@@ -318,14 +328,20 @@
           </div>
         </div>
 
-        <div v-if="needInfo" class="panel-section">
+        <div v-if="needInfo" class="panel-section clarification-section">
           <div class="hitl-callout warn">
             <CircleHelp :size="14" />
             <div>
               <strong>任务在等待补充采购条件</strong>
-              <p>请回到对话中完成补充，提交后任务会自动继续。</p>
+              <p>请在这里补充缺失字段，提交后会继续当前任务，无需重新创建。</p>
             </div>
           </div>
+          <SupplementPanel
+            :data="task"
+            kind="clarification"
+            :submitting="loading"
+            @resume="resumeClarification"
+          />
         </div>
 
         <details v-if="report" class="hitl-details">
@@ -376,6 +392,7 @@ import {
   X,
 } from '@lucide/vue'
 import MarkdownRenderer from './MarkdownRenderer.vue'
+import SupplementPanel from './hitl/SupplementPanel.vue'
 import { useToast } from '../composables/useToast'
 import { useTaskStore } from '../composables/useTaskStore'
 import { formatClock, formatCurrency, formatDate } from '../utils/format'
@@ -405,13 +422,35 @@ const retryInterrupt = computed(() =>
     : null,
 )
 const needInfo = computed(() => task.value?.status === 'need_info' && !approval.value)
+const currentFailure = computed(() => {
+  const candidate =
+    task.value?.state_summary?.last_error ||
+    task.value?.interrupt?.last_error
+  return candidate && typeof candidate === 'object' ? candidate : null
+})
+const failureCode = computed(() => currentFailure.value?.code || '')
 const failureMessage = computed(() => {
   const status = task.value?.status
-  if (!['failed', 'rejected', 'cancelled'].includes(status)) return ''
-  const error = task.value?.interrupt?.last_error || task.value?.state_summary?.error
+  if (!['failed', 'rejected', 'cancelled', 'orphaned'].includes(status)) return ''
+  const error =
+    task.value?.state_summary?.last_error || task.value?.interrupt?.last_error
   if (!error) return '任务已结束，请查看任务事件了解详情。'
   if (typeof error === 'string') return error
   return error.message || error.code || '任务执行失败。'
+})
+const failureDetails = computed(() => {
+  const errors = currentFailure.value?.errors
+  if (!Array.isArray(errors)) return []
+  return errors
+    .map((error) => {
+      if (typeof error === 'string') return { code: '', message: error }
+      if (!error || typeof error !== 'object') return null
+      return {
+        code: error.code || '',
+        message: error.message || error.code || '',
+      }
+    })
+    .filter((error) => error?.message)
 })
 const report = computed(
   () =>
@@ -643,6 +682,17 @@ async function resumeRetry(action) {
   try {
     await store.resume({ action })
     toast(action === 'cancel' ? '任务已取消' : '已提交重试', { tone: 'success' })
+  } catch {
+    /* 错误已写入 store.error */
+  }
+}
+
+async function resumeClarification(payload) {
+  if (loading.value) return
+  error.value = ''
+  try {
+    await store.resume(payload)
+    toast('补充信息已提交，任务将继续处理', { tone: 'success' })
   } catch {
     /* 错误已写入 store.error */
   }
@@ -1130,6 +1180,33 @@ onMounted(async () => {
   margin-top: 2px;
   font-size: 11.5px;
   line-height: 1.6;
+}
+
+.failure-details {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.failure-details li {
+  display: grid;
+  gap: 2px;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 22%, transparent);
+  border-radius: var(--r-xs);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+  color: var(--ink-2);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.failure-detail-code {
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 650;
 }
 
 .panel-section :deep(.md-body) {

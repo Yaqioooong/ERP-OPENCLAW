@@ -8,6 +8,7 @@ from agent.procurement.dependencies import (
     get_task_event_service,
     get_task_runner,
 )
+from agent.procurement.request_normalization import ProcurementRequestInputError
 from agent.procurement.task_events import encode_sse
 from agent.procurement.task_runner import TaskCheckpointMissing
 from api_view.auth.models import AuthenticatedUser
@@ -47,6 +48,8 @@ async def start_task(
             request=request.request,
             roles=user.roles,
         )
+    except ProcurementRequestInputError as exc:
+        raise HTTPException(status_code=422, detail=exc.as_detail()) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

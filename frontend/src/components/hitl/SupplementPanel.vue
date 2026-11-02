@@ -336,7 +336,13 @@ const CLARIFY_FIELDS = {
     label: '指定供应商 ID',
     type: 'number',
     min: 1,
-    placeholder: '可选',
+    placeholder: '按提示填写供应商 ID',
+  },
+  preferred_supplier_name: {
+    key: 'preferred_supplier_name',
+    label: '指定供应商名称',
+    type: 'text',
+    placeholder: '例如 电装（上海）国际贸易有限公司',
   },
   priority: {
     key: 'priority',
@@ -414,6 +420,7 @@ function humanizePath(path) {
       budget: '预算上限',
       required_by: '要求到货日期',
       preferred_supplier_id: '指定供应商',
+      preferred_supplier_name: '指定供应商名称',
       priority: '选商偏好',
       note: '补充说明',
       items: '采购物料',
@@ -490,7 +497,7 @@ function buildClarificationFields(paths) {
       result.push({
         ...definition,
         current: currentRequest.value[path],
-        required: path !== 'note' && path !== 'preferred_supplier_id',
+        required: path !== 'note',
         full: definition.type === 'textarea',
       })
     }

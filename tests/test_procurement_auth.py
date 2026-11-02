@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from api_view.api import procurement
 from api_view.auth.models import AuthenticatedUser
 from api_view.auth.permissions import require_password_ready
+from agent.procurement.request_normalization import ProcurementRequestInputError
 
 
 class FakeRunner:
@@ -63,6 +64,41 @@ def test_get_task_passes_db_roles(monkeypatch):
         "task_id": "TASK-1",
         "user_id": "u_a",
         "roles": ("requester", "approver"),
+    }
+
+
+def test_invalid_procurement_request_returns_structured_422(monkeypatch):
+    user = AuthenticatedUser(
+        user_id="u_a", username="alice", roles=("requester",)
+    )
+    client, runner = build_app(user, monkeypatch)
+
+    async def reject(**kwargs):
+        raise ProcurementRequestInputError(
+            [{"field": "items[0].quantity", "message": "Input should be a valid integer"}]
+        )
+
+    runner.start = reject
+    response = client.post(
+        "/api/procurement/tasks",
+        json={
+            "message": "",
+            "request": {
+                "items": [{"part_name": "火花塞", "quantity": "不是数量"}],
+                "warehouse_location": "华东仓",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == {
+        "code": "INVALID_PROCUREMENT_REQUEST",
+        "errors": [
+            {
+                "field": "items[0].quantity",
+                "message": "Input should be a valid integer",
+            }
+        ],
     }
 
 

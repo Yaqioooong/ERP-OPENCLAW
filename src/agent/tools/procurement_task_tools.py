@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import re
+from copy import deepcopy
 from typing import Any
 
 from langchain.tools import ToolRuntime
@@ -14,6 +16,29 @@ from pydantic import BaseModel, Field
 
 from agent.memory.identity import require_user_id
 from agent.procurement.dependencies import get_task_runner
+from agent.procurement.request_normalization import (
+    ProcurementRequestInputError,
+    normalize_procurement_request,
+)
+
+
+_PART_MODEL_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?=[A-Za-z0-9._/+~-]*[A-Za-z])"
+    r"(?=[A-Za-z0-9._/+~-]*\d)[A-Za-z0-9._/+~-]+"
+)
+_GENERIC_PART_TERMS = (
+    "火花塞",
+    "机油",
+    "机滤",
+    "空滤",
+    "空调滤",
+    "刹车片",
+    "刹车盘",
+    "轮胎",
+    "电瓶",
+    "蓄电池",
+)
+_CONFIRMATIONS = {"确认", "确定", "可以", "没问题", "是的", "好的", "下单"}
 
 
 def _context(runtime: ToolRuntime) -> tuple[str, str, tuple[str, ...]]:
@@ -58,7 +83,10 @@ class StartProcurementTaskInput(BaseModel):
             "结构化采购需求。必须使用以下字段："
             "items[].part_id、items[].part_name、items[].quantity、"
             "items[].part_code、items[].target_unit_price；"
-            "warehouse_location、budget、required_by、preferred_supplier_id、priority。"
+            "warehouse_location、budget、required_by、preferred_supplier_id、"
+            "preferred_supplier_name、priority。"
+            "用户已经确认物料型号时，items[].part_name 必须保留具体型号，"
+            "禁止只传“火花塞”等品类词。"
             "不要使用 material_id/material_name/part 等别名；"
             "不要在模型侧编造 part_id/预算/仓库。"
         ),
@@ -67,31 +95,93 @@ class StartProcurementTaskInput(BaseModel):
 
 def _normalize_request(request: dict[str, Any]) -> dict[str, Any]:
     """兼容模型常见的字段别名，最终统一为 ProcurementRequest 契约。"""
-    data = dict(request or {})
-    normalized_items = []
-    for raw in data.get("items") or []:
-        if not isinstance(raw, dict):
-            continue
-        item = dict(raw)
-        if item.get("part_id") is None:
-            item["part_id"] = item.get("material_id") or item.get("partId")
-        if item.get("part_name") is None:
-            item["part_name"] = (
-                item.get("material_name")
-                or item.get("partName")
-                or item.get("name")
-            )
-        if item.get("part_code") is None:
-            item["part_code"] = item.get("material_code") or item.get("partCode")
-        if item.get("quantity") is None:
-            item["quantity"] = item.get("qty")
-        for alias in ("material_id", "material_name", "material_code", "part", "partId", "partName", "partCode", "name", "qty"):
-            item.pop(alias, None)
-        normalized_items.append(item)
-    data["items"] = normalized_items
-    if data.get("priority") not in {"price", "lead_time", "balanced"}:
-        data["priority"] = "balanced"
+    return normalize_procurement_request(request)
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(item.get("text", ""))
+            if isinstance(item, dict)
+            else str(item)
+            for item in content
+        )
+    return str(content or "")
+
+
+def _part_models(text: str) -> list[str]:
+    models = []
+    seen = set()
+    for match in _PART_MODEL_TOKEN.findall(text):
+        key = match.casefold()
+        if key not in seen:
+            seen.add(key)
+            models.append(match)
+    return models
+
+
+def _is_confirmation(text: str) -> bool:
+    normalized = re.sub(r"[\s，。！？,.!?]", "", text)
+    return normalized in _CONFIRMATIONS
+
+
+def _is_generic_part_name(name: str) -> bool:
+    return bool(name) and not _part_models(name) and any(
+        term in name for term in _GENERIC_PART_TERMS
+    )
+
+
+def _restore_confirmed_part_identity(
+    request: dict[str, Any],
+    messages: list[Any] | None,
+) -> dict[str, Any]:
+    """补回最近一轮用户已明确并确认的唯一型号，不跨历史猜物料。"""
+    data = deepcopy(request)
+    items = data.get("items")
+    if not isinstance(items, list) or len(items) != 1:
+        return data
+    item = items[0]
+    if not isinstance(item, dict):
+        return data
+    if item.get("part_id") is not None or item.get("part_code"):
+        return data
+    part_name = str(item.get("part_name") or "").strip()
+    if not _is_generic_part_name(part_name):
+        return data
+
+    human_texts = [
+        _message_text(getattr(message, "content", ""))
+        for message in messages or []
+        if getattr(message, "type", None) == "human"
+    ]
+    if not human_texts:
+        return data
+
+    latest_models = _part_models(human_texts[-1])
+    if not latest_models and len(human_texts) >= 2 and _is_confirmation(
+        human_texts[-1]
+    ):
+        latest_models = _part_models(human_texts[-2])
+
+    unique_models = {
+        model.casefold(): model for model in latest_models
+    }
+    if len(unique_models) != 1:
+        return data
+    model = next(iter(unique_models.values()))
+    if model.casefold() not in part_name.casefold():
+        item["part_name"] = f"{part_name} {model}"
     return data
+
+
+def _runtime_messages(runtime: ToolRuntime) -> list[Any]:
+    state = getattr(runtime, "state", None)
+    if not isinstance(state, dict):
+        return []
+    messages = state.get("messages")
+    return messages if isinstance(messages, list) else []
 
 
 class GetProcurementTaskInput(BaseModel):
@@ -116,16 +206,31 @@ async def start_procurement_task(
     """启动完整采购任务：分析 → 审批 → 订单执行 → 核验。"""
     user_id, username, roles = _context(runtime)
     runner = await get_task_runner()
+    normalized = _normalize_request(request)
+    normalized = _restore_confirmed_part_identity(
+        normalized,
+        _runtime_messages(runtime),
+    )
     try:
         result = await runner.start_background(
             raw_request="",
             user_id=user_id,
             username=username,
-            request=_normalize_request(request),
+            request=normalized,
             roles=roles,
         )
         # 后台任务会通过 SSE 继续推进；前端收到 task_id 后打开采购任务面板。
         return _dump(_public_result(result))
+    except ProcurementRequestInputError as exc:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": exc.code,
+                "message": str(exc),
+                "field_errors": exc.errors,
+            },
+            ensure_ascii=False,
+        )
     except Exception as exc:
         return json.dumps(
             {
@@ -200,7 +305,7 @@ def build_procurement_task_tools() -> list[StructuredTool]:
             description=(
                 "启动一笔完整的采购任务，依次执行需求分析、审批、下单和订单核验。"
                 "适用于用户明确要求采购/下单，而不是只做查询或比价。"
-                "返回 task_id，后续用 get_procurement_task/resume_procurement_task。"
+                "返回 task_id；审批、补充和重试由用户在任务面板完成。"
             ),
             args_schema=StartProcurementTaskInput,
         ),
