@@ -485,19 +485,6 @@ class McpProcurementDataProvider:
             )
             candidates = [_normalize_part(record)] if record else []
             candidates = [p for p in candidates if p["id"] == item.part_id]
-            if candidates and item.part_code:
-                requested_code = str(item.part_code).strip().lower()
-                formal_code = str(candidates[0].get("code") or "").strip().lower()
-                if formal_code != requested_code:
-                    raise PartResolutionError(
-                        code="PART_CODE_MISMATCH",
-                        message=(
-                            f"物料 ID {item.part_id} 的正式编码为 "
-                            f"{candidates[0].get('code') or '未知'}，"
-                            f"与用户提供的编码 {item.part_code} 不一致，"
-                            "请确认使用哪个标识。"
-                        ),
-                    )
             if candidates:
                 item.part_name = candidates[0]["name"]
         elif item.part_name:

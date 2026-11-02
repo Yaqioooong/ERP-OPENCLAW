@@ -1,13 +1,13 @@
 # ERP 采购智能助手
 
-基于 [Deep Agents](https://github.com/langchain-ai/deepagents) 与 [LangGraph](https://github.com/langchain-ai/langgraph) 构建的 ERP 采购领域多 Agent 应用。主 Agent 负责理解需求、维护用户偏好并调度子 Agent；两类子 Agent 分别承担采购分析与订单操作；业务数据通过 MCP 工具访问 Java ERP 后端。
+基于 [Deep Agents](https://github.com/langchain-ai/deepagents) 与 [LangGraph](https://github.com/langchain-ai/langgraph) 构建的 ERP 采购领域多 Agent 应用。主 Agent 负责对话编排：新建采购走确定性工作流（`start_procurement_task`），采购分析与存量订单维护委派子 Agent；业务数据通过 MCP 工具访问 Java ERP 后端。
 
 ## 功能特性
 
-- **多 Agent 协作**：主 Agent 通过 `task` 工具把任务委派给 `procurement-analyst`（采购分析）或 `procurement-order`（订单操作），同一条消息中可并行委派多个任务。
+- **多 Agent 协作**：主 Agent 通过 `task` 工具把任务委派给 `procurement-analyst`（采购分析）或 `procurement-order`（存量订单维护），同一条消息中可并行委派多个任务。
 - **采购分析**：供应商比价、物料行情、库存预警、订单明细查询，支持 26 种图表与地图可视化，最终输出结构化报告。
-- **订单操作**：采购订单创建、修改与查询；关键字段缺失时通过 HITL 中断向用户补充信息，绝不猜测业务数据。
-- **完整采购任务**：前端「采购任务」面板和主 Agent 工具都可以启动“分析 → 审批 → 下单 → 核验”状态机。
+- **订单维护**：已有采购订单的修改、取消与查询；关键字段缺失时通过 HITL 中断向用户补充信息，绝不猜测业务数据。订单子 Agent 不具备创建能力。
+- **完整采购任务**：订单创建的唯一入口是“分析 → 审批 → 下单 → 核验”状态机，可由前端「采购任务」面板或主 Agent 的 `start_procurement_task` 启动；审批只发生在任务面板。
 - **注册、登录与权限**：支持自助注册（默认申请人）、登录会话、修改密码、退出所有设备；固定 `requester/approver/admin` 角色，管理员可审批角色升级、启停账号与重置密码。
 - **可信身份与记忆隔离**：登录后由服务端会话确定 `user_id`，不接受客户端身份头；`/memories/` 强制按 `(user_id,)` 命名空间读写，路径越权与身份缺失都会被拒绝，并记录不含正文的审计日志。
 - **长期记忆**：用户偏好按 `user_id` 隔离，持久化在 Redis Store 的 `/memories/{user_id}/preferences.md`，跨会话生效。
@@ -261,6 +261,18 @@ result = await graph.ainvoke(
 - **回传**：子 Agent 最后一条有文本的 AI 消息被包装为 `ToolMessage` 返回，中间的工具调用、沙箱操作对父 Agent 不可见。
 
 因此子 Agent 的 YAML 提示词中约定了固定的返回结构（报告路径、摘要、结论、建议），详细的 Markdown 报告落在沙箱 `/analysis/` 目录下。
+
+### 订单写入只有一条路径
+
+“创建订单”只属于确定性采购任务工作流，子 Agent 与主 Agent 都不直接写订单：
+
+| 能力 | 执行者 | 说明 |
+| --- | --- | --- |
+| 新建采购单/下单 | `start_procurement_task` → 采购状态下图 | 唯一创建入口；审批、幂等键、租约与核验都在工作流内 |
+| 修改/取消/查询已有订单 | `procurement-order` 子 Agent | 只持 `order_update`、`order_search_details`；执行前经 `order_guard` 做字段校验与人工确认 |
+| 采购分析/比价 | `procurement-analyst` 子 Agent | 只读查询，输出报告 |
+
+约束：任何子 Agent 的 YAML 都不得声明 `order_create`；主 Agent 提示词与 `/AGENTS.md` 必须把创建类请求路由到 `start_procurement_task`。回归测试见 `tests/test_agent_boundaries.py`（规格 `specs/009-single-order-write-path`）。
 
 ### 上下文注入
 
