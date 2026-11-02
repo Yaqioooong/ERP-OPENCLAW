@@ -29,6 +29,13 @@ from agent.memory.identity import (
 )
 
 
+PREFERENCE_FILENAME = "preferences.md"
+
+
+def is_preferences_path(path: str) -> bool:
+    return str(path).rstrip("/").endswith(f"/{PREFERENCE_FILENAME}")
+
+
 class UserMemoryBackend(StoreBackend):
     """只允许当前可信用户访问自己的记忆命名空间。"""
 
@@ -131,6 +138,9 @@ class UserMemoryBackend(StoreBackend):
         user_id = self._current_user()
         if not self._check_path(user_id, "write", file_path):
             return WriteResult(error="permission_denied")
+        if is_preferences_path(file_path):
+            self._deny(user_id, "write", file_path, "preference_write_requires_tool")
+            return WriteResult(error="use_save_preferences_tool")
         result = super().write(file_path, content)
         self._log(user_id, "write", file_path, result.error, size=len(content or ""))
         return result
@@ -139,6 +149,9 @@ class UserMemoryBackend(StoreBackend):
         user_id = self._current_user()
         if not self._check_path(user_id, "write", file_path):
             return WriteResult(error="permission_denied")
+        if is_preferences_path(file_path):
+            self._deny(user_id, "write", file_path, "preference_write_requires_tool")
+            return WriteResult(error="use_save_preferences_tool")
         result = await super().awrite(file_path, content)
         self._log(user_id, "write", file_path, result.error, size=len(content or ""))
         return result
@@ -154,6 +167,9 @@ class UserMemoryBackend(StoreBackend):
         user_id = self._current_user()
         if not self._check_path(user_id, "edit", file_path):
             return EditResult(error="permission_denied")
+        if is_preferences_path(file_path):
+            self._deny(user_id, "edit", file_path, "preference_write_requires_tool")
+            return EditResult(error="use_save_preferences_tool")
         result = super().edit(
             file_path, old_string, new_string, replace_all=replace_all
         )
@@ -170,6 +186,9 @@ class UserMemoryBackend(StoreBackend):
         user_id = self._current_user()
         if not self._check_path(user_id, "edit", file_path):
             return EditResult(error="permission_denied")
+        if is_preferences_path(file_path):
+            self._deny(user_id, "edit", file_path, "preference_write_requires_tool")
+            return EditResult(error="use_save_preferences_tool")
         result = await super().aedit(
             file_path, old_string, new_string, replace_all=replace_all
         )
@@ -181,6 +200,9 @@ class UserMemoryBackend(StoreBackend):
         user_id = self._current_user()
         if not self._check_path(user_id, "delete", file_path):
             return DeleteResult(error="permission_denied")
+        if is_preferences_path(file_path):
+            self._deny(user_id, "delete", file_path, "preference_write_requires_tool")
+            return DeleteResult(error="use_save_preferences_tool")
         result = super().delete(file_path)
         self._log(user_id, "delete", file_path, result.error)
         return result
@@ -189,6 +211,9 @@ class UserMemoryBackend(StoreBackend):
         user_id = self._current_user()
         if not self._check_path(user_id, "delete", file_path):
             return DeleteResult(error="permission_denied")
+        if is_preferences_path(file_path):
+            self._deny(user_id, "delete", file_path, "preference_write_requires_tool")
+            return DeleteResult(error="use_save_preferences_tool")
         result = await super().adelete(file_path)
         self._log(user_id, "delete", file_path, result.error)
         return result
@@ -263,6 +288,25 @@ class UserMemoryBackend(StoreBackend):
         self._log(user_id, "glob", path or "/", result.error)
         return result
 
+    async def write_preferences_internal(
+        self,
+        user_id: str,
+        file_path: str,
+        content: str,
+    ) -> WriteResult:
+        """仅供 PreferenceMemoryService 在锁内调用，绕过通用写入限制。"""
+        current_user = self._current_user()
+        if current_user != user_id:
+            self._deny(current_user, "write", file_path, "identity_mismatch")
+            return WriteResult(error="permission_denied")
+        if not self._check_path(user_id, "write", file_path):
+            return WriteResult(error="permission_denied")
+        if not is_preferences_path(file_path):
+            return WriteResult(error="invalid_path")
+        result = await super().awrite(file_path, content)
+        self._log(user_id, "write", file_path, result.error, size=len(content or ""))
+        return result
+
     # ---- 上传 / 下载 ----
     def upload_files(
         self, files: list[tuple[str, bytes]]
@@ -271,10 +315,18 @@ class UserMemoryBackend(StoreBackend):
         responses: list[FileUploadResponse] = []
         accepted: list[tuple[str, bytes]] = []
         for path, content in files:
-            if self._check_path(user_id, "write", path):
+            if self._check_path(user_id, "write", path) and not is_preferences_path(path):
                 accepted.append((path, content))
             else:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                if is_preferences_path(path):
+                    self._deny(user_id, "write", path, "preference_write_requires_tool")
+                    responses.append(
+                        FileUploadResponse(path=path, error="use_save_preferences_tool")
+                    )
+                else:
+                    responses.append(
+                        FileUploadResponse(path=path, error="permission_denied")
+                    )
         responses.extend(super().upload_files(accepted))
         return responses
 
@@ -285,10 +337,18 @@ class UserMemoryBackend(StoreBackend):
         responses: list[FileUploadResponse] = []
         accepted: list[tuple[str, bytes]] = []
         for path, content in files:
-            if self._check_path(user_id, "write", path):
+            if self._check_path(user_id, "write", path) and not is_preferences_path(path):
                 accepted.append((path, content))
             else:
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                if is_preferences_path(path):
+                    self._deny(user_id, "write", path, "preference_write_requires_tool")
+                    responses.append(
+                        FileUploadResponse(path=path, error="use_save_preferences_tool")
+                    )
+                else:
+                    responses.append(
+                        FileUploadResponse(path=path, error="permission_denied")
+                    )
         responses.extend(await super().aupload_files(accepted))
         return responses
 

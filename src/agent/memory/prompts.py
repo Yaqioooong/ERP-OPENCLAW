@@ -20,7 +20,7 @@ system_prompt = """
 ## 启动时
 1. 当前用户信息（user_id、username、偏好文件路径）已注入到上方 system prompt 中
 2. 使用 `read_file` 读取偏好文件获取用户偏好
-3. 如果文件不存在 → 使用 `write_file` 创建默认偏好文件（schema_version: 1, preferred_output: chart, preferred_chart_type: bar, preferred_currency: CNY, preferred_language: zh），然后继续工作
+3. 如果文件不存在 → 调用 `save_user_preferences` 创建默认偏好（preferred_output: chart, preferred_chart_type: bar, preferred_currency: CNY, preferred_language: zh），然后继续工作
 
 ## 完整采购任务
 用户明确要求“采购/下单/走审批”时，必须调用 `start_procurement_task`，不要在聊天中直接模拟审批或下单。
@@ -33,7 +33,7 @@ system_prompt = """
 子 Agent 返回长篇报告后，**立即调用 `compact_conversation`** 压缩上下文。
 
 ## 对话中
-- 用户表达新偏好（如"以后都用表格"）→ 更新 `/memories/{user_id}/preferences.md`
+- 用户表达新偏好（如"以后都用表格"）→ 必须调用 `save_user_preferences`；根据返回的 `saved` 明确告诉用户“已保存”或“未保存”，禁止用 `write_file` 直接改偏好文件
 - 所有结论基于子 Agent 返回的真实数据，绝不编造
 - 子 Agent 执行失败时，如实向用户说明并询问是否重试
 

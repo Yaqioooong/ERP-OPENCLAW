@@ -16,10 +16,11 @@
 ### 1. 对话开始时（每次收到新消息前）
 - 从运行时 `context` 中提取 `user_id`（Python 变量名为 `user_id`）
 - 使用 `read_file` 工具读取 `/memories/{user_id}/preferences.md`
-- 如果文件不存在（新用户首次使用）→ 使用 `write_file` 创建包含以下默认偏好的文件：
+- 如果文件不存在（新用户首次使用）→ 调用 `save_user_preferences` 创建包含以下默认偏好的文件：
 
 ```yaml
-schema_version: 1
+schema_version: 2
+revision: 0
 preferred_output: chart          # 只允许 table / chart
 preferred_chart_type: bar        # generate_visualization 支持的 26 种 chart_type
 preferred_currency: CNY          # CNY / USD / EUR / JPY / HKD / GBP
@@ -30,6 +31,9 @@ recent_queries: []
 
 > 偏好文件由 Pydantic 模型严格校验。不要写入未知字段，不要使用未列出的枚举值；
 > 非法文件不会被自动覆盖，自动更新只维护 `recent_suppliers` / `recent_queries`。
+> 显式偏好必须调用 `save_user_preferences` 工具保存；不要用 `write_file`/`edit_file`
+> 直接改 `/memories/{user_id}/preferences.md`，该路径的通用写入会被拒绝。
+> 工具返回 `saved=false` 时必须明确告诉用户“未保存”，不能声称已保存。
 
 - 将用户偏好应用到本次对话（输出格式、图表类型、货币单位等）
 
@@ -38,7 +42,7 @@ recent_queries: []
 - 用户询问通用知识（行业概念、技术原理、市场资讯等）→ 使用 `web_search` 搜索后直接回答
 - 用户表达采购分析需求 → 委派 `procurement-analyst`
 - 用户要求操作采购单 → 委派 `procurement-order`
-- 用户表达新偏好（"以后都用表格"）→ 在回复用户后，更新 `/memories/{user_id}/preferences.md`
+- 用户表达新偏好（"以后都用表格"）→ 调用 `save_user_preferences`；根据返回的 `saved` 告知用户“已保存”或“未保存”
 
 ### 3. 收到子 Agent 返回后
 - **如果返回内容较长（超过约 2000 字）→ 立即调用 `compact_conversation` 工具压缩上下文**
@@ -46,8 +50,8 @@ recent_queries: []
 - 如果子 Agent 部分失败，明确告知用户哪些成功了、哪些失败了
 
 ### 4. 对话结束前
-- 如有新的用户偏好被确认 → 使用 `edit_file` 或 `write_file` 更新 `/memories/{user_id}/preferences.md`
-- 更新 `recent_suppliers` 和 `recent_queries` 字段
+- 如有新的用户偏好被确认 → 调用 `save_user_preferences` 更新显式字段
+- `recent_suppliers` / `recent_queries` 由系统自动维护，无需手动写入
 
 ---
 
@@ -156,17 +160,18 @@ web_search(query="用户的问题关键词")
 
 > `/AGENTS.md` 存储在沙箱（OpenSandbox）中，由系统启动时上传，Agent **只读**。
 > `/memories/` 路径由 **CompositeBackend** 路由到 **StoreBackend**（LangGraph Store），实现跨会话持久化。
-> 你无需关心底层存储——使用 `read_file` / `write_file` 操作即可，框架自动处理路由。
+> 你无需关心底层存储——读取用 `read_file`；显式偏好写入用 `save_user_preferences`，框架自动处理路由与并发保护。
 
 ### 记忆文件路径
 | 文件 | 路径 | 权限 | 内容 |
 |------|------|------|------|
 | 全局准则 | `/AGENTS.md` | **只读** | 本文件，由开发者维护，存储于沙箱 |
-| 用户偏好 | `/memories/{user_id}/preferences.md` | 读写 | 用户个人偏好（YAML 格式） |
+| 用户偏好 | `/memories/{user_id}/preferences.md` | 读；写经工具 | 用户个人偏好（YAML 格式） |
 
 ### 用户偏好文件格式
 ```yaml
-schema_version: 1
+schema_version: 2
+revision: 0
 preferred_output: table          # "table" 或 "chart"
 preferred_chart_type: bar        # generate_visualization 支持的 26 种类型之一
 preferred_currency: CNY          # "CNY", "USD", "EUR", "JPY", "HKD", "GBP"
@@ -180,7 +185,7 @@ recent_queries:                  # 最近 5 条分析需求摘要
 ```
 
 ### 何时更新记忆
-- 用户明确表达偏好（"以后都用条形图"）→ 更新对应字段
+- 用户明确表达偏好（"以后都用条形图"）→ 调用 `save_user_preferences` 更新对应字段，并根据 `saved` 告知用户
 - 用户完成了供应商相关查询 → 将供应商名追加到 `recent_suppliers`（去重，保留最近 10 个）
 - 用户完成了一次分析 → 将分析需求摘要追加到 `recent_queries`（保留最近 5 条）
 - **不要**在每次对话中都强制写入，仅在确实有变更时更新

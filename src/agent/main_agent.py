@@ -39,6 +39,7 @@ from agent.config import (
     DOWNLOAD_DIR,
     LOCAL_AGENTS_MD,
     MAIN_MODEL,
+    REDIS_CLIENT,
     SANDBOX_CONFIG,
     SKILLS_STORE_NAMESPACE,
     STORE,
@@ -50,7 +51,10 @@ from agent.middleware_config import (
     create_analyst_middleware,
     create_order_middleware,
 )
+from agent.memory.candidate_generator import MemoryCandidateGenerator
 from agent.memory.identity import user_namespace_for_runtime
+from agent.memory.preference_lock import RedisPreferenceLock
+from agent.memory.preference_service import PreferenceMemoryService
 from agent.memory.user_memory_backend import UserMemoryBackend
 from agent.middlewares.context_injection import ContextInjectionMiddleware
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
@@ -65,6 +69,7 @@ from agent.tools.assign_skill import create_assign_skill_tool
 from agent.tools.download_sandbox_file import create_download_tool
 from agent.tools.mcp_client import load_mcp_tools
 from agent.tools.order_guard import build_guarded_order_tools
+from agent.tools.preference_tools import build_preference_tools
 from agent.tools.procurement_task_tools import build_procurement_task_tools
 from agent.tools.web_search import web_search
 
@@ -134,19 +139,26 @@ async def create_main_agent(
     # /persisted-skills/  → StoreBackend（按 Agent scope 组织技能）
     # 其余路径（临时文件、代码执行）保留在沙箱。
     logger.info("配置 CompositeBackend (memories + persisted-skills → Store)...")
+    user_memory_backend = UserMemoryBackend(
+        store=STORE,
+        namespace=user_namespace_for_runtime,
+    )
     backend = CompositeBackend(
         default=sandbox_backend,
         routes={
-            "/memories/": UserMemoryBackend(
-                store=STORE,
-                namespace=user_namespace_for_runtime,
-            ),
+            "/memories/": user_memory_backend,
             "/persisted-skills/": StoreBackend(
                 store=STORE,
                 namespace=lambda _rt: SKILLS_STORE_NAMESPACE,
             ),
         },
     )
+    preference_service = PreferenceMemoryService(
+        backend=user_memory_backend,
+        lock=RedisPreferenceLock(REDIS_CLIENT),
+    )
+    candidate_generator = MemoryCandidateGenerator(SUMMARY_MODEL)
+
     # --- Phase 2: MCP工具加载 ---
     logger.info("加载 MCP 工具")
     try:
@@ -227,7 +239,10 @@ async def create_main_agent(
         SkillsSyncMiddleware(sandbox_backend),
         UserSkillsRestoreMiddleware(sandbox_backend, SKILLS_STORE_NAMESPACE),
         build_summarization_middleware(backend, SUMMARY_MODEL),
-        MemoryUpdateMiddleware(model=SUMMARY_MODEL, backend=backend),
+        MemoryUpdateMiddleware(
+            generator=candidate_generator,
+            preference_service=preference_service,
+        ),
         ModelCallLimitMiddleware(run_limit=50),
         ToolCallLimitMiddleware(run_limit=200)
     ]
@@ -243,6 +258,7 @@ async def create_main_agent(
             web_search,
             assign_skill,
             download_sandbox_file,
+            *build_preference_tools(preference_service),
             *procurement_task_tools,
         ],
         subagents=subagents,

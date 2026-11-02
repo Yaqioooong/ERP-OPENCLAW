@@ -272,13 +272,14 @@ result = await graph.ainvoke(
 
 `CompositeBackend` 按路径分流：`/memories/` 下的读写被路由到 Redis `StoreBackend`，命名空间为 `(user_id,)`；其余路径（`/analysis`、`/data`、`/skills`）落在 OpenSandbox 沙箱。
 
-偏好文件使用 Pydantic 模型 `UserPreferences` 严格校验（`schema_version: 1`）：
+偏好文件使用 Pydantic 模型 `UserPreferences` 严格校验（`schema_version: 2`，含 `revision`）：
 
 - `preferred_output` 只允许 `table` / `chart`；
 - `preferred_chart_type` 只允许 `generate_visualization` 支持的图表类型；
 - 未知字段、非法枚举、错误类型、缩进错误一律拒绝写入并告警，不覆盖原文件；
 - 无版本或 `schema_version: 0` 的旧文件按 v0→v1 规则迁移，显式字段保留；
 - `MemoryUpdateMiddleware` 每轮只自动维护 `recent_suppliers` / `recent_queries`，不修改显式偏好。
+- 记忆先生成 `MemoryCandidate`（来源、置信度、消息 ID），再按 `origin/type/confidence` 分级持久化；推断供应商只取真实工具结果，显式偏好走专用工具。
 
 ## 扩展开发
 

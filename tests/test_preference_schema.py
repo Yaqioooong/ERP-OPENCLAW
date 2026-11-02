@@ -12,7 +12,8 @@ from agent.memory.preferences import (
     merge_auto_fields,
 )
 
-VALID_YAML = """schema_version: 1
+VALID_YAML = """schema_version: 2
+revision: 3
 preferred_output: table
 preferred_chart_type: bar
 preferred_currency: CNY
@@ -30,6 +31,7 @@ def test_valid_document_keeps_types_and_enums():
     prefs = loaded.preferences
     assert loaded.migrated is False
     assert prefs.schema_version == CURRENT_SCHEMA_VERSION
+    assert prefs.revision == 3
     assert prefs.preferred_output == "table"
     assert prefs.preferred_chart_type == "bar"
     assert prefs.preferred_currency == "CNY"
@@ -41,7 +43,7 @@ def test_valid_document_keeps_types_and_enums():
 def test_dump_roundtrip_and_version_first():
     prefs = load_preferences(VALID_YAML).preferences
     text = dump_preferences(prefs)
-    assert text.splitlines()[0] == "schema_version: 1"
+    assert text.splitlines()[0] == "schema_version: 2"
     assert load_preferences(text).preferences == prefs
 
 
@@ -54,20 +56,33 @@ def test_empty_document_uses_defaults():
 def test_legacy_document_without_version_is_migrated():
     loaded = load_preferences("preferred_output: table\nrecent_suppliers: []\n")
     assert loaded.migrated is True
-    assert loaded.preferences.schema_version == 1
+    assert loaded.preferences.schema_version == 2
+    assert loaded.preferences.revision == 0
     assert loaded.preferences.preferred_output == "table"
 
 
 def test_legacy_zero_version_is_migrated():
     loaded = load_preferences("schema_version: 0\npreferred_output: chart\n")
     assert loaded.migrated is True
-    assert loaded.preferences.schema_version == 1
+    assert loaded.preferences.schema_version == 2
+    assert loaded.preferences.revision == 0
     assert loaded.preferences.preferred_output == "chart"
+
+
+def test_v1_is_migrated_with_revision_zero():
+    loaded = load_preferences(
+        "schema_version: 1\npreferred_output: table\npreferred_currency: USD\n"
+    )
+    assert loaded.migrated is True
+    assert loaded.preferences.schema_version == 2
+    assert loaded.preferences.revision == 0
+    assert loaded.preferences.preferred_output == "table"
+    assert loaded.preferences.preferred_currency == "USD"
 
 
 def test_future_version_is_rejected():
     with pytest.raises(PreferenceSchemaError) as exc:
-        load_preferences("schema_version: 2\n")
+        load_preferences("schema_version: 3\n")
     assert exc.value.reason == "unsupported_version"
 
 

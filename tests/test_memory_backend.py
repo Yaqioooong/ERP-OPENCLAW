@@ -18,7 +18,9 @@ async def test_user_a_write_is_invisible_to_user_b():
     a = make_backend(store, "u_a")
     b = make_backend(store, "u_b")
 
-    written = await a.awrite("/u_a/preferences.md", "preferred_output: table\n")
+    written = await a.write_preferences_internal(
+        "u_a", "/u_a/preferences.md", "preferred_output: table\n"
+    )
     assert written.error is None
 
     own = await a.aread("/u_a/preferences.md")
@@ -69,8 +71,8 @@ async def test_ls_root_is_scoped_to_namespace():
     store = InMemoryStore()
     a = make_backend(store, "u_a")
     b = make_backend(store, "u_b")
-    await a.awrite("/u_a/preferences.md", "a")
-    await b.awrite("/u_b/preferences.md", "b")
+    await a.write_preferences_internal("u_a", "/u_a/preferences.md", "a")
+    await b.write_preferences_internal("u_b", "/u_b/preferences.md", "b")
 
     root = await a.als("/")
     assert root.error is None
@@ -121,3 +123,39 @@ def test_audit_drops_unknown_and_content_fields():
     joined = "\n".join(messages)
     assert "u_a" in joined
     assert "SHOULD-NOT-APPEAR" not in joined
+
+
+@pytest.mark.anyio
+async def test_direct_preference_write_is_blocked():
+    store = InMemoryStore()
+    backend = make_backend(store, "u_a")
+
+    write_result = await backend.awrite("/u_a/preferences.md", "schema_version: 2\n")
+    assert write_result.error == "use_save_preferences_tool"
+    assert (await backend.aread("/u_a/preferences.md")).error is not None
+
+    edit_result = await backend.aedit("/u_a/preferences.md", "a", "b")
+    assert edit_result.error == "use_save_preferences_tool"
+
+
+@pytest.mark.anyio
+async def test_internal_preference_write_bypasses_tool_guard():
+    store = InMemoryStore()
+    backend = make_backend(store, "u_a")
+    result = await backend.write_preferences_internal(
+        "u_a",
+        "/u_a/preferences.md",
+        "schema_version: 2\nrevision: 1\npreferred_output: table\n",
+    )
+    assert result.error is None
+    read = await backend.aread("/u_a/preferences.md")
+    assert read.error is None
+    assert "preferred_output: table" in (read.file_data or {}).get("content", "")
+
+
+@pytest.mark.anyio
+async def test_other_memory_files_still_writable():
+    store = InMemoryStore()
+    backend = make_backend(store, "u_a")
+    result = await backend.awrite("/u_a/notes.md", "hello")
+    assert result.error is None

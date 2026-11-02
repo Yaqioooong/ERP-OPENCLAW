@@ -19,6 +19,7 @@ _ALLOWED_FIELDS = (
     "outcome",
     "reason",
     "size",
+    "revision",
 )
 
 

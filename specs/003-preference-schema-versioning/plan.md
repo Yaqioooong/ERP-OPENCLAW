@@ -3,6 +3,8 @@
 - 对应规格：`specs/003-preference-schema-versioning/spec.md`
 - 状态：已实现（2026-10-29）
 
+> 注：004 已将当前 `schema_version` 升级为 2 并新增 `revision`；本方案中的 v1 为 003 交付时状态。
+
 ## 1. 模型与模块
 
 新增 `src/agent/memory/preferences.py`，作为偏好 schema 的唯一事实源：

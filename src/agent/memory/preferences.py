@@ -7,7 +7,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 PreferredOutput = Literal["table", "chart"]
 Currency = Literal["CNY", "USD", "EUR", "JPY", "HKD", "GBP"]
@@ -53,6 +53,7 @@ class UserPreferences(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
     schema_version: int = CURRENT_SCHEMA_VERSION
+    revision: int = 0
     preferred_output: PreferredOutput | None = None
     preferred_chart_type: ChartType | None = None
     preferred_currency: Currency | None = None
@@ -63,8 +64,15 @@ class UserPreferences(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def _validate_version(cls, value: int) -> int:
-        if value < 1 or value > CURRENT_SCHEMA_VERSION:
-            raise ValueError(f"schema_version 必须为 1（当前版本 {CURRENT_SCHEMA_VERSION}）")
+        if value != CURRENT_SCHEMA_VERSION:
+            raise ValueError(f"schema_version 必须为 {CURRENT_SCHEMA_VERSION}")
+        return value
+
+    @field_validator("revision")
+    @classmethod
+    def _validate_revision(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("revision 不能为负数")
         return value
 
     @field_validator("recent_suppliers", "recent_queries")
@@ -162,6 +170,7 @@ def load_preferences(text: str | None) -> LoadedPreferences:
     migrated = False
     if "schema_version" not in data:
         data["schema_version"] = CURRENT_SCHEMA_VERSION
+        data["revision"] = 0
         migrated = True
     else:
         version = data["schema_version"]
@@ -178,8 +187,9 @@ def load_preferences(text: str | None) -> LoadedPreferences:
             raise PreferenceSchemaError(
                 "invalid_schema_version", {"schema_version": "版本号不能为负数"}
             )
-        if version == 0:
+        if version in (0, 1):
             data["schema_version"] = CURRENT_SCHEMA_VERSION
+            data["revision"] = 0
             migrated = True
 
     try:
