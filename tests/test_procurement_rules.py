@@ -1,5 +1,7 @@
 from datetime import date
 
+from loguru import logger as loguru_logger
+
 from agent.procurement.models import ProcurementRequest, RequestedItem
 from agent.procurement.rules import (
     compute_plan_hash,
@@ -78,6 +80,68 @@ def test_unknown_delivery_is_not_retried_without_new_information():
 
     error = next(e for e in result.errors if e.code == "PLAN_DELIVERY_UNKNOWN")
     assert error.retryable is False
+    assert "活塞环组件" in error.message
+
+
+def test_validate_plan_logs_each_check_and_failure_detail():
+    plan = make_plan(unit_price="1.00")
+    candidates = make_candidates(unit_price="100.00")
+    request = make_request()
+    messages = []
+    sink_id = loguru_logger.add(
+        lambda message: messages.append(str(message)),
+        level="INFO",
+    )
+    try:
+        result = validate_plan(
+            plan,
+            request,
+            candidates,
+            task_id="TASK-1",
+            today=date(2026, 10, 21),
+        )
+    finally:
+        loguru_logger.remove(sink_id)
+
+    assert not result.passed
+    logs = "\n".join(messages)
+    steps = {
+        "task_identity",
+        "warehouse_consistency",
+        "supplier_candidate",
+        "supplier_status",
+        "preferred_supplier",
+        "item_count",
+        "requested_parts",
+        "candidate_prices",
+        "amount_recompute",
+        "budget",
+        "delivery",
+        "inventory",
+    }
+    for step in steps:
+        assert (
+            f"procurement.plan.check.start task_id=TASK-1 step={step}"
+            in logs
+        )
+        assert (
+            f"procurement.plan.check.result task_id=TASK-1 step={step}"
+            in logs
+        )
+
+    price_line = next(
+        line
+        for line in messages
+        if (
+            "procurement.plan.check.result" in line
+            and "step=candidate_prices" in line
+        )
+    )
+    assert "outcome=failed" in price_line
+    assert "error_codes=PLAN_PRICE_MISMATCH" in price_line
+    assert "error_fields=items[0].unit_price" in price_line
+    assert "error_retryable=PLAN_PRICE_MISMATCH:true" in price_line
+    assert "第 1 条明细单价应为 100.00，方案给出 1.00" in price_line
 
 def test_execution_guard_detects_plan_hash_tampering():
     plan = make_plan(quantity=200)

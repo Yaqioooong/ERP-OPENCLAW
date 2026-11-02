@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from fastmcp import FastMCP, Context
 
+from agent.procurement.config import as_business_datetime, utc_now_in_business_tz
 from mcp_server.contracts import (
     ToolErrorCode,
     normalize_order,
@@ -20,8 +21,9 @@ from mcp_server.tool_io import failure, request_json, success
 GROUP_NAME = "order"
 
 
-def _generate_order_number() -> str:
-    today = datetime.now().strftime("%Y%m%d")
+def _generate_order_number(now: datetime | None = None) -> str:
+    current = as_business_datetime(now or utc_now_in_business_tz())
+    today = current.strftime("%Y%m%d")
     suffix = str(random.randint(0, 999)).zfill(3)
     return f"PO{today}{suffix}"
 
@@ -38,15 +40,17 @@ def _serialize_request(value):
     return value
 
 
-def _prepare_create_payload(data: dict) -> dict:
+def _prepare_create_payload(
+        data: dict, *, now: datetime | None = None
+) -> dict:
     payload = dict(data)
+    current = as_business_datetime(now or utc_now_in_business_tz())
     if not payload.get("orderNumber"):
-        payload["orderNumber"] = _generate_order_number()
+        payload["orderNumber"] = _generate_order_number(current)
     if not payload.get("orderTime"):
-        now = datetime.now()
         payload["orderTime"] = (
-                now.strftime("%Y-%m-%dT%H:%M:%S.")
-                + f"{now.microsecond // 1000:03d}"
+                current.strftime("%Y-%m-%dT%H:%M:%S.")
+                + f"{current.microsecond // 1000:03d}"
         )
     payload.setdefault("status", 1)
     return _serialize_request(payload)

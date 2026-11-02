@@ -159,10 +159,44 @@
   - 覆盖：AC-21、AC-22、AC-23、AC-24
   - 验证：日志测试通过；采购回归 `58 passed, 24 skipped`；非 Redis/PostgreSQL 全量回归 `212 passed, 57 skipped`；`git diff --check` 通过
 
+## 阶段十：确定性方案校验分步日志（2026-11-02 确认补充）
+
+- [x] T28 增加 `validate_plan` 分步日志与失败详情测试
+  - 文件：`tests/test_procurement_rules.py`
+  - 覆盖：AC-25
+  - 验证：先复现只有最终汇总、无法定位检查段；实现后验证 12 个检查段的 start/result 和价格失败详情
+
+- [x] T29 实现确定性校验 step trace
+  - 文件：`src/agent/procurement/rules.py`
+  - 覆盖：AC-25
+  - 验证：每段记录开始、耗时、新增错误/警告、字段和可重试属性；不改变校验顺序、结果对象或异常行为
+
+- [x] T30 执行规则与采购回归并回填验收证据
+  - 文件：`specs/008-procurement-request-recovery/spec.md`、本文件
+  - 覆盖：AC-25
+  - 验证：规则测试 `10 passed`；采购专项 `59 passed, 24 skipped`；非 Redis/PostgreSQL 全量回归 `213 passed, 57 skipped`；`git diff --check` 通过
+
+## 阶段十一：交货日期自然日与业务时区修复（2026-11-02 确认补充）
+
+- [x] T31 增加交期自然日、跨时区、方案基准和缺失诊断测试
+  - 文件：`tests/test_data_provider.py`、`tests/test_plan_proposer.py`、`tests/test_procurement_rules.py`、`tests/test_order_tools.py`
+  - 覆盖：AC-26、AC-27、AC-28
+  - 验证：先复现完整 24 小时向下取整得到 7 天、带时区跨日得到 8 天、UTC `now` 偏移一天和缺交期信息不具体；修复后相关测试 `39 passed`
+
+- [x] T32 统一业务时区自然日计算
+  - 文件：`src/agent/procurement/config.py`、`src/agent/procurement/data_provider.py`、`src/agent/procurement/planner.py`、`src/mcp_server/tools/order_tools.py`
+  - 覆盖：AC-26、AC-27、AC-28
+  - 验证：实际/预计交期按自然日差；带时区和无时区输入均按业务本地日期解释；方案和 MCP 下单时间使用业务日期；采购专项 `64 passed, 24 skipped`
+
+- [x] T33 补齐缺失交期诊断并执行回归
+  - 文件：`src/agent/procurement/rules.py`
+  - 覆盖：AC-28
+  - 验证：`PLAN_DELIVERY_UNKNOWN` 和交期未知警告指向具体物料；非 Redis/PostgreSQL 全量回归 `219 passed, 57 skipped`；`git diff --check` 通过
+
 ## 完成定义（DoD）
 
 - [x] 所有验收标准有对应测试或可复现验证记录
-- [ ] 全量测试和前端构建通过（前端通过；非 Redis/PostgreSQL 全量集 `206 passed, 57 skipped`，其余等待可用环境）
+- [ ] 全量测试和前端构建通过（前端通过；非 Redis/PostgreSQL 全量集 `213 passed, 57 skipped`，其余等待可用环境）
 - [x] 接口契约与 README 一致
 - [x] 无数据库迁移；回滚方式明确
 - [ ] 提交信息包含 `feat(008):`

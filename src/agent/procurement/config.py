@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -83,4 +83,22 @@ PROCUREMENT_RECONCILE_CONFIRM_MIN_SECONDS = int(
 
 
 def utc_now_in_business_tz() -> datetime:
-    return datetime.now(ZoneInfo(PROCUREMENT_TIMEZONE))
+    return datetime.now(business_timezone())
+
+
+def business_timezone() -> ZoneInfo:
+    """返回采购业务时区，统一日期边界和自然日口径。"""
+    return ZoneInfo(PROCUREMENT_TIMEZONE)
+
+
+def as_business_datetime(value: datetime) -> datetime:
+    """带时区值转业务时区；无时区存量值补业务时区后解释。"""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=business_timezone())
+    return value.astimezone(business_timezone())
+
+
+def business_date(value: datetime | None = None) -> date:
+    """返回业务时区下的自然日；无时区时间视为业务本地时间。"""
+    current = value or utc_now_in_business_tz()
+    return as_business_datetime(current).date()

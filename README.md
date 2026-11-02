@@ -157,7 +157,7 @@ get_procurement_task
 
 任务缺少仓库等关键字段时会停在「待补充」，直接在面板中填写并按原任务恢复即可；不设预算时预算保持为空，不会被默认值替代。物料填写名称、编码或 ID 即可；明确提供 `part_id` 时直接读取该物料，名称仅作描述和追溯，不会因模糊搜索未命中而否定有效 ID。没有 ID 时系统继续做确定性名称解析，组合名称即使与 ERP 名称词序不同，也会用品牌、型号和品类关键词模糊检索，只有候选仍不唯一或找不到物料时才要求补充。若用户刚确认了上一轮明确给出的唯一型号，任务工具会把该型号补回结构化请求，避免只提交“火花塞”等品类词。供应商可以填写已确认的供应商 ID 或名称，系统只有在目录中唯一匹配时才继续分析；零件记录带出的 `supplierId` 会继续查询正式供应商名称、状态和信用。`DENSO` 等品牌名若对应多个供应商主体，会列出候选并要求确认，不会自动绑定物料默认供应商。历史交期优先使用实际到货日期，缺失时按订单时间和预计交货日期估算并标记来源。仓库、物料和供应商等本轮可补充问题会在同一个面板中一次列出；确定性方案校验失败时，面板会逐项显示具体错误码和原因。
 
-排查采购任务时，用任务面板中的 `task_id` 过滤服务日志。状态图会统一输出 `procurement.node.start`、`procurement.node.result`、`procurement.node.error`、`procurement.node.interrupted` 和 `procurement.node.route`；路由日志包含 `from/route/to`，节点结果包含状态、方案版本、审批状态、执行状态、订单号和耗时。日志只记录摘要，不输出原始对话、偏好正文、完整方案或完整 MCP 响应。
+排查采购任务时，用任务面板中的 `task_id` 过滤服务日志。状态图会统一输出 `procurement.node.start`、`procurement.node.result`、`procurement.node.error`、`procurement.node.interrupted` 和 `procurement.node.route`；路由日志包含 `from/route/to`，节点结果包含状态、方案版本、审批状态、执行状态、订单号和耗时。确定性方案校验还会按 `procurement.plan.check.start/result` 记录 `task_identity`、`warehouse_consistency`、`supplier_candidate`、`supplier_status`、`preferred_supplier`、`item_count`、`requested_parts`、`candidate_prices`、`amount_recompute`、`budget`、`delivery`、`inventory` 十二个检查段；失败结果包含错误码、字段、是否可重试和期望/实际值。日志只记录摘要，不输出原始对话、偏好正文、完整方案或完整 MCP 响应。
 
 ### 6. 启动服务
 

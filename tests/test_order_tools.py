@@ -1,11 +1,14 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import httpx
 import pytest
 
 from mcp_server.contracts import normalize_order_detail
 from mcp_server.mcp_tools_bean import OrderCreateInput, OrderDetailItem
-from mcp_server.tools.order_tools import create_order_core
+from mcp_server.tools.order_tools import (
+    _prepare_create_payload,
+    create_order_core,
+)
 
 
 class FakeRequest:
@@ -36,6 +39,16 @@ def test_normalize_order_detail_preserves_expected_delivery_date():
 
     assert record.expected_delivery_date == date(2024, 1, 9)
     assert record.actual_delivery_date is None
+
+
+def test_prepare_create_payload_uses_business_timezone_date():
+    payload = _prepare_create_payload(
+        {}, now=datetime(2026, 11, 2, 17, 0, tzinfo=timezone.utc)
+    )
+
+    # UTC 11-02 17:00 = 上海 11-03 01:00
+    assert payload["orderTime"] == "2026-11-03T01:00:00.000"
+    assert payload["orderNumber"].startswith("PO20261103")
 
 
 @pytest.mark.anyio

@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 from decimal import Decimal
 
+from agent.procurement.config import business_date
 from agent.procurement.models import ProcurementRequest, CandidateSet, PlanProposal, ProcurementPlan, PlanItem, \
     InventoryGap
 from agent.procurement.rules import q2
@@ -80,7 +81,7 @@ class DefaultPlanBuilder:
             f"SUP-{proposal.supplier_id}",
         )
         expected_delivery_date = (
-            now.date() + timedelta(days=max(lead_times))
+            business_date(now) + timedelta(days=max(lead_times))
             if len(lead_times) == len(items)
             else None
         )

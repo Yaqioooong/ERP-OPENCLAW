@@ -1,8 +1,8 @@
 # 规格：采购任务请求校验、补充恢复与失败可观测性
 
 - 规格编号：`008`
-- 状态：已确认（2026-11-02；补充方案数据完整性、失败诊断与状态图节点日志规则）
-- 实现状态：物料解析恢复、方案数据完整性、失败诊断、对话确认上下文与状态图节点日志已实现；环境级全量回归待补
+- 状态：已确认（2026-11-02；补充方案数据完整性、交期自然日口径、失败诊断与状态图节点日志规则）
+- 实现状态：物料解析恢复、方案数据完整性、交期正确性、失败诊断、对话确认上下文、状态图节点日志与确定性校验分步日志已实现；采购专项及非 Redis/PostgreSQL 回归通过，环境级全量回归待补
 - 提出人：采购任务使用者
 - 日期：2026-11-02
 - 关联需求：修复电装 DENSO U27ETR 采购任务无法继续或启动即失败的问题
@@ -46,8 +46,11 @@
 - 物料记录返回 `supplierId` 时必须使用该稳定 ID 查询供应商主体，并补全正式名称、状态和信用评级；不得把 `supplierId` 当作品牌名，也不得在能读取供应商详情时继续显示合成名称或未知状态。
 - 物料记录中的 `purchasePrice` 可作为无历史报价时的采购价来源；供应商主体与采购价必须分别标注来源，不能相互替代。
 - 历史订单有实际交期时优先按 `orderTime → actualDeliveryDate` 计算交期；实际交期缺失且存在 `expectedDeliveryDate` 时，可按 `orderTime → expectedDeliveryDate` 估算，并在候选或分析数据中明确标记为预计交期来源。
+- 历史交期按 `PROCUREMENT_TIMEZONE` 下的自然日日期差计算，而不是按完整 24 小时周期向下取整；同日为 `0`、次日为 `1`，时间部分不改变业务日差。
+- 带时区的历史时间先转换到业务时区再取日期，不能直接剥离时区；无时区的存量时间按 ERP 业务本地时间解释。实际交期和预计交期均早于下单日期时视为无效，不得生成负交期。
 - 历史预计交期是确定性数据回退，不是对当前供应商的新承诺；方案仍须以当前日期加上推算交期得到预计到货日，并由既有确定性规则判断是否满足用户要求日期。
 - 若实际交期和预计交期都不存在，系统不得编造交期；用户指定要求到货日时必须说明无法验证该日期，且不得对同一不可修复方案进行无意义重复重试。
+- 方案预计到货日必须从业务时区下的当前自然日开始计算；任一方案物料缺少交期时不得生成一个看似完整但不完整承诺的整体到货日，校验错误必须指出无法推算交期的物料。
 - 当单物料请求只包含品类词（如“火花塞”）且没有 `part_id/part_code` 时，任务工具可从最近一轮用户表达及紧随其后的确认中恢复唯一、明确的产品型号；恢复结果仅追加到 `part_name`，不得生成编号或替换用户原文。
 - 型号恢复只接受最近两轮用户消息中的唯一字母数字型号；当前消息不是确认语时不回溯更早历史。没有唯一型号时必须保持原请求并进入待补充，不得跨任务猜测。
 - “待补充”任务必须保留原任务及其已有信息；补充成功后继续同一任务。
@@ -58,6 +61,8 @@
 - 节点抛出人工中断、业务返回失败或发生未处理异常时，必须记录可区分的事件；失败日志必须包含错误码或异常类型，且不得改变节点原有返回值、异常传播或中断语义。
 - 条件路由必须记录源节点、路由键和目标节点，使排查者能够确认状态图实际走了哪条分支；成功订单链路必须可还原 `create_order → verify_order → complete_task`。
 - 节点日志仅记录诊断白名单摘要，不得记录用户偏好正文、原始采购对话、完整 `CandidateSet`/方案、完整 MCP 响应或异常上下文中的大段上游原文。错误消息需做换行清理和长度上限截断。
+- `validate_plan` 必须按确定性检查段分别记录开始、结果、耗时和新增错误/警告。至少覆盖任务、仓库、供应商候选、供应商状态、偏好供应商、条目数、请求物料、候选价格、金额重算、预算、交期和库存检查。
+- 校验检查失败时，日志必须包含稳定检查名、错误码、字段路径、是否可重试和截断后的错误消息，使排查者无需复现方案即可判断期望值与实际值的差异；通过或仅有警告时也必须能确认该检查已执行。
 
 ## 4. 验收标准
 
@@ -87,6 +92,10 @@
 | AC-22 | 失败与中断可诊断 | 节点进入人工中断、返回业务失败或抛出未处理异常 | 排查采购链路 | 分别输出 `procurement.node.interrupted`、`procurement.node.error` 或异常错误日志；业务失败含错误码，异常含异常类型，原中断、返回值和异常传播保持不变 |
 | AC-23 | 路由与下单链路可还原 | 用户创建、审批并执行一笔正常采购 | 按 `task_id` 检索日志 | 每个条件分支都有 `procurement.node.route`，包含源节点、路由键和目标节点；可还原 `create_order → verify_order → complete_task`，并看到订单号 |
 | AC-24 | 日志内容受控 | 请求包含用户偏好、采购对话、候选方案或大段上游错误 | 节点记录日志 | 日志不包含用户偏好正文、原始对话、完整候选/方案、完整 MCP 响应；业务错误消息经过单行化和长度截断 |
+| AC-25 | 确定性校验分步可见 | 方案进入 `validate_plan`，其中候选价格、预算或交期等任一检查可能失败 | 执行方案确定性校验 | 12 个检查步骤均输出带 `task_id` 和稳定 `step` 名的 start/result；失败步骤含 `outcome=failed`、错误码、字段、`retryable` 和错误详情，可通过日志直接定位不通过的规则 |
+| AC-26 | 历史交期按自然日计算 | 下单时间为 9 月 1 日 10:00，实际或预计到货为 9 月 9 日 09:00 | 归一化历史订单 | 交期为 8 个自然日，不因不足完整 24 小时而错误得到 7 天 |
+| AC-27 | 跨时区日期不偏移 | 历史时间带 UTC 等时区，且换算后的业务日期与原始日期文本不同 | 归一化历史订单 | 先把时间转换到 `PROCUREMENT_TIMEZONE` 再计算自然日差；无时区存量时间保持其日期语义 |
+| AC-28 | 预计到货日基准与缺失诊断正确 | 方案构建时的当前时间带非业务时区，或任一方案物料没有有效交期 | 生成方案并执行确定性校验 | 预计到货日按业务时区当前自然日加最长交期；有物料缺少交期时不编造整体日期，并指出具体物料 |
 
 ## 5. 范围
 
@@ -146,6 +155,8 @@
 - 前端：任务面板在 `need_info` 渲染 `SupplementPanel` 并直接调用 resume；卡片、面板统一读取 `state_summary.last_error`；失败面板提供返回对话重新发起出口。
 - 供应商主体补全：`test_collect_enriches_supplier_from_part_supplier_id` 使用用户提供的 DENSO 零件完整样例，验证 `supplierId=31` 调用 `supplier_get` 后得到“电装配件专营店”、状态 1、信用 A，同时采购价 32 标记为 `part_master`。
 - 历史交期回退：`test_collect_uses_expected_delivery_when_actual_delivery_is_missing` 验证实际交期为空时按 `orderTime → expectedDeliveryDate` 得到交期，并标记 `lead_time_source=expected_delivery`；`test_denso_plan_uses_expected_historical_lead_time_to_meet_required_date` 验证 2026-11-02 的 8 天交期得到预计到货 2026-11-10，并通过确定性方案校验。
+- 交期自然日：`test_historical_lead_time_uses_calendar_date_difference` 覆盖不足完整 24 小时仍按业务日期计算；`test_historical_lead_time_converts_aware_times_to_business_timezone` 覆盖 UTC 跨日场景。
+- 交期基准与诊断：`test_plan_builder_uses_business_date_for_aware_now` 验证非业务时区的 `now` 不会导致预计到货日偏移；`test_unknown_delivery_error_names_parts_without_lead_time` 验证缺交期时不编造日期并指出受影响物料。
 - 无效重试收敛：`test_unknown_delivery_is_not_retried_without_new_information` 验证彻底缺少交期时 `PLAN_DELIVERY_UNKNOWN` 不再触发相同方案重试。
 - 订单明细契约：`test_normalize_order_detail_preserves_expected_delivery_date` 验证 MCP 订单明细保留 `expectedDeliveryDate`，避免 Agent 侧再次丢失交期依据。
 - 失败可观测性：任务面板从 `last_error.errors[]` 逐项展示具体错误码和消息，不再只显示通用 `PLAN_VALIDATION_FAILED`。
@@ -158,7 +169,8 @@
 - 下单失败分支：`test_create_order_failure_routes_to_fail_task_with_error_code` 验证订单创建失败时日志包含 `create_order` 的 `FAKE_FAILED`、实际路由 `create_order → fail_task` 和最终失败节点。
 - 日志内容控制：`test_node_logs_do_not_include_request_or_full_state_payloads` 验证原始对话、采购请求、完整候选和完整方案不进入节点日志；错误消息会清理换行并截断到 500 字符。
 - 原有采购日志兼容：节点内 Loguru 调用已从不生效的 `%s` 占位符改为 `{}`；方案校验日志只记录 `task_id`、通过结果和错误/警告码，不再输出缩进 JSON。
-- 相关回归：采购验收测试集 `58 passed, 24 skipped`；排除 Redis/agent.config 收集依赖后的全量集 `212 passed, 57 skipped`；`git diff --check` 通过。
+- 分步校验 trace：`test_validate_plan_logs_each_check_and_failure_detail` 验证 12 个检查段均执行并记录结果；候选价格不一致时日志包含 `step=candidate_prices outcome=failed`、`PLAN_PRICE_MISMATCH`、具体字段、重试属性和期望/实际价格。
+- 相关回归：采购验收测试集 `59 passed, 24 skipped`；排除 Redis/agent.config 收集依赖后的全量集 `213 passed, 57 skipped`；`git diff --check` 通过。
 
 环境限制：
 

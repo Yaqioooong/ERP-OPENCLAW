@@ -1,5 +1,7 @@
 import hashlib
 import json
+import time
+from contextlib import contextmanager
 from datetime import date, datetime
 from decimal import Decimal, ROUND_HALF_UP
 
@@ -35,6 +37,91 @@ def issue(
         severity=severity,
         retryable=retryable,
         fixable=fixable,
+    )
+
+
+def _single_line(value: str, *, limit: int = 500) -> str:
+    text = " ".join(value.split())
+    return text if len(text) <= limit else f"{text[:limit]}…"
+
+
+def _issue_codes(issues: list[ValidationIssue]) -> str:
+    return ",".join(item.code for item in issues) or "-"
+
+
+def _issue_fields(issues: list[ValidationIssue]) -> str:
+    return ",".join(item.field or "-" for item in issues) or "-"
+
+
+def _issue_retryability(issues: list[ValidationIssue]) -> str:
+    return ",".join(
+        f"{item.code}:{str(item.retryable).lower()}"
+        for item in issues
+    ) or "-"
+
+
+def _issue_details(issues: list[ValidationIssue]) -> str:
+    return _single_line(
+        " | ".join(f"{item.code}: {item.message}" for item in issues)
+    )
+
+
+@contextmanager
+def _plan_check(
+        *,
+        task_id: str,
+        step: str,
+        errors: list[ValidationIssue],
+        warnings: list[ValidationIssue],
+):
+    """记录单个确定性检查段，不改变校验结果。"""
+    error_start = len(errors)
+    warning_start = len(warnings)
+    started = time.perf_counter()
+    logger.info(
+        "procurement.plan.check.start task_id={} step={}",
+        task_id,
+        step,
+    )
+    try:
+        yield
+    except Exception as exc:
+        logger.error(
+            "procurement.plan.check.result task_id={} step={} outcome=error "
+            "duration_ms={} error_type={} error_message={}",
+            task_id,
+            step,
+            int((time.perf_counter() - started) * 1000),
+            type(exc).__name__,
+            _single_line(str(exc)),
+        )
+        raise
+
+    new_errors = errors[error_start:]
+    new_warnings = warnings[warning_start:]
+    outcome = (
+        "failed"
+        if new_errors
+        else "warning"
+        if new_warnings
+        else "passed"
+    )
+    logger.info(
+        "procurement.plan.check.result task_id={} step={} outcome={} "
+        "duration_ms={} error_codes={} error_fields={} error_retryable={} "
+        "error_details={} warning_codes={} warning_fields={} "
+        "warning_details={}",
+        task_id,
+        step,
+        outcome,
+        int((time.perf_counter() - started) * 1000),
+        _issue_codes(new_errors),
+        _issue_fields(new_errors),
+        _issue_retryability(new_errors),
+        _issue_details(new_errors),
+        _issue_codes(new_warnings),
+        _issue_fields(new_warnings),
+        _issue_details(new_warnings),
     )
 
 
@@ -183,201 +270,303 @@ def validate_plan(
     errors: list[ValidationIssue] = []
     warnings: list[ValidationIssue] = []
     # 3.1 任务/仓库一致性
-    if plan.task_id != task_id:
-        errors.append(
-            issue(
-                "PLAN_TASK_MISMATCH",
-                f"方案属于任务 {plan.task_id}，当前任务为 {task_id}。",
-                field="task_id",
+    with _plan_check(
+            task_id=task_id,
+            step="task_identity",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if plan.task_id != task_id:
+            errors.append(
+                issue(
+                    "PLAN_TASK_MISMATCH",
+                    f"方案属于任务 {plan.task_id}，当前任务为 {task_id}。",
+                    field="task_id",
+                )
             )
-        )
-    if request.warehouse_location and plan.warehouse_location.strip() != request.warehouse_location.strip():
-        errors.append(
-            issue(
-                "PLAN_WAREHOUSE_MISMATCH",
-                f"方案仓库为 {plan.warehouse_location}，"
-                f"需求仓库为 {request.warehouse_location}。",
-                field="warehouse_location",
-                retryable=True,
+
+    with _plan_check(
+            task_id=task_id,
+            step="warehouse_consistency",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if (
+                request.warehouse_location
+                and plan.warehouse_location.strip()
+                != request.warehouse_location.strip()
+        ):
+            errors.append(
+                issue(
+                    "PLAN_WAREHOUSE_MISMATCH",
+                    f"方案仓库为 {plan.warehouse_location}，"
+                    f"需求仓库为 {request.warehouse_location}。",
+                    field="warehouse_location",
+                    retryable=True,
+                )
             )
-        )
 
     # 3.2 供应商必须在候选集内，且状态可用
     supplier_offers = [o for o in candidates.offers if o.supplier_id == plan.supplier_id]
-    if not supplier_offers:
-        errors.append(
-            issue(
-                "PLAN_SUPPLIER_NOT_IN_CANDIDATES",
-                f"供应商 {plan.supplier_id} 不在本次候选集中，禁止使用未查询到的供应商。",
-                field="supplier_id",
-                retryable=True,
+    with _plan_check(
+            task_id=task_id,
+            step="supplier_candidate",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if not supplier_offers:
+            errors.append(
+                issue(
+                    "PLAN_SUPPLIER_NOT_IN_CANDIDATES",
+                    f"供应商 {plan.supplier_id} 不在本次候选集中，禁止使用未查询到的供应商。",
+                    field="supplier_id",
+                    retryable=True,
+                )
             )
-        )
-    else:
-        statuses = {o.supplier_status for o in supplier_offers}
-        if None in statuses:
+
+    with _plan_check(
+            task_id=task_id,
+            step="supplier_status",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if supplier_offers:
+            statuses = {o.supplier_status for o in supplier_offers}
+            if None in statuses:
+                warnings.append(
+                    issue(
+                        "SUPPLIER_STATUS_UNKNOWN",
+                        "供应商状态未返回，审批时需人工确认。",
+                        field="supplier_id",
+                        severity="warning",
+                    )
+                )
+            unavailable = {
+                s for s in statuses if s is not None
+                and s not in PROCUREMENT_ACTIVE_SUPPLIER_STATUSES
+            }
+            if unavailable:
+                errors.append(
+                    issue(
+                        "SUPPLIER_UNAVAILABLE",
+                        f"供应商 {plan.supplier_id} 状态为 {sorted(unavailable)}，不可下单。",
+                        field="supplier_id",
+                    )
+                )
+
+    # 3.2.1 用户指定供应商时，方案偏离只给 warning，交由审批人决定
+    with _plan_check(
+            task_id=task_id,
+            step="preferred_supplier",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if (
+                request.preferred_supplier_id is not None
+                and plan.supplier_id != request.preferred_supplier_id
+        ):
             warnings.append(
                 issue(
-                    "SUPPLIER_STATUS_UNKNOWN",
-                    "供应商状态未返回，审批时需人工确认。",
+                    "PLAN_PREFERRED_SUPPLIER_IGNORED",
+                    f"用户指定供应商 {request.preferred_supplier_id}，"
+                    f"方案选择 {plan.supplier_id}，请在审批时确认。",
                     field="supplier_id",
                     severity="warning",
                 )
             )
-        unavailable = {
-            s for s in statuses if s is not None
-                                   and s not in PROCUREMENT_ACTIVE_SUPPLIER_STATUSES
-        }
-        if unavailable:
+
+    # 3.2.2 方案明细数量不能少于需求条目数（多物料映射的细化留到后续）
+    with _plan_check(
+            task_id=task_id,
+            step="item_count",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if len(plan.items) < len(request.items):
             errors.append(
                 issue(
-                    "SUPPLIER_UNAVAILABLE",
-                    f"供应商 {plan.supplier_id} 状态为 {sorted(unavailable)}，不可下单。",
-                    field="supplier_id",
+                    "PLAN_ITEM_COUNT_MISMATCH",
+                    f"需求包含 {len(request.items)} 条物料，方案只有 {len(plan.items)} 条。",
+                    field="items",
+                    retryable=True,
                 )
             )
 
-        # 3.2.1 用户指定供应商时，方案偏离只给 warning，交由审批人决定
-    if (
-            request.preferred_supplier_id is not None
-            and plan.supplier_id != request.preferred_supplier_id
+    # 3.2.3 需求全部条目都给出 part_id 时，方案不能夹带未请求的物料
+    # （名称-only 的条目需要先由数据适配器解析成 part_id，混用时不在这里做严格比对）
+    with _plan_check(
+            task_id=task_id,
+            step="requested_parts",
+            errors=errors,
+            warnings=warnings,
     ):
-        warnings.append(
-            issue(
-                "PLAN_PREFERRED_SUPPLIER_IGNORED",
-                f"用户指定供应商 {request.preferred_supplier_id}，"
-                f"方案选择 {plan.supplier_id}，请在审批时确认。",
-                field="supplier_id",
-                severity="warning",
-            )
-        )
+        if request.items and all(i.part_id is not None for i in request.items):
+            requested_ids = {i.part_id for i in request.items}
+            for item in plan.items:
+                if item.part_id not in requested_ids:
+                    errors.append(
+                        issue(
+                            "PLAN_PART_NOT_REQUESTED",
+                            f"物料 {item.part_id} 不在本次需求中，禁止加入方案。",
+                            field="items",
+                            retryable=True,
+                        )
+                    )
 
-        # 3.2.2 方案明细数量不能少于需求条目数（多物料映射的细化留到后续）
-    if len(plan.items) < len(request.items):
-        errors.append(
-            issue(
-                "PLAN_ITEM_COUNT_MISMATCH",
-                f"需求包含 {len(request.items)} 条物料，方案只有 {len(plan.items)} 条。",
-                field="items",
-                retryable=True,
-            )
-        )
-
-        # 3.2.3 需求全部条目都给出 part_id 时，方案不能夹带未请求的物料
-        # （名称-only 的条目需要先由数据适配器解析成 part_id，混用时不在这里做严格比对）
-    if request.items and all(i.part_id is not None for i in request.items):
-        requested_ids = {i.part_id for i in request.items}
-        for item in plan.items:
-            if item.part_id not in requested_ids:
+    # 3.3 明细：物料、价格必须来自候选数据
+    offer_index = {(o.supplier_id, o.part_id): o for o in candidates.offers}
+    with _plan_check(
+            task_id=task_id,
+            step="candidate_prices",
+            errors=errors,
+            warnings=warnings,
+    ):
+        for index, item in enumerate(plan.items):
+            offer = offer_index.get((plan.supplier_id, item.part_id))
+            if offer is None:
                 errors.append(
                     issue(
-                        "PLAN_PART_NOT_REQUESTED",
-                        f"物料 {item.part_id} 不在本次需求中，禁止加入方案。",
-                        field="items",
+                        "PLAN_PART_NOT_IN_CANDIDATES",
+                        f"第 {index + 1} 条明细的物料 {item.part_id} "
+                        f"没有供应商 {plan.supplier_id} 的候选报价。",
+                        field=f"items[{index}].part_id",
+                        retryable=True,
+                    )
+                )
+                continue
+            if offer.unit_price is None:
+                errors.append(
+                    issue(
+                        "PLAN_PRICE_MISSING",
+                        f"物料 {item.part_id} 缺少有效报价，不能编造价格。",
+                        field=f"items[{index}].unit_price",
+                    )
+                )
+                continue
+            if q2(offer.unit_price) != q2(item.unit_price):
+                errors.append(
+                    issue(
+                        "PLAN_PRICE_MISMATCH",
+                        f"第 {index + 1} 条明细单价应为 {q2(offer.unit_price)}，"
+                        f"方案给出 {item.unit_price}。",
+                        field=f"items[{index}].unit_price",
                         retryable=True,
                     )
                 )
 
-        # 3.3 明细：物料、价格必须来自候选数据
-    offer_index = {(o.supplier_id, o.part_id): o for o in candidates.offers}
-    for index, item in enumerate(plan.items):
-        offer = offer_index.get((plan.supplier_id, item.part_id))
-        if offer is None:
-            errors.append(
-                issue(
-                    "PLAN_PART_NOT_IN_CANDIDATES",
-                    f"第 {index + 1} 条明细的物料 {item.part_id} "
-                    f"没有供应商 {plan.supplier_id} 的候选报价。",
-                    field=f"items[{index}].part_id",
-                    retryable=True,
-                )
-            )
-            continue
-        if offer.unit_price is None:
-            errors.append(
-                issue(
-                    "PLAN_PRICE_MISSING",
-                    f"物料 {item.part_id} 缺少有效报价，不能编造价格。",
-                    field=f"items[{index}].unit_price",
-                )
-            )
-            continue
-        if q2(offer.unit_price) != q2(item.unit_price):
-            errors.append(
-                issue(
-                    "PLAN_PRICE_MISMATCH",
-                    f"第 {index + 1} 条明细单价应为 {q2(offer.unit_price)}，"
-                    f"方案给出 {item.unit_price}。",
-                    field=f"items[{index}].unit_price",
-                    retryable=True,
-                )
-            )
-
     # 3.4 金额重算
-    expected_total, amount_issues = recompute_plan_amounts(plan)
-    errors.extend(amount_issues)
+    with _plan_check(
+            task_id=task_id,
+            step="amount_recompute",
+            errors=errors,
+            warnings=warnings,
+    ):
+        expected_total, amount_issues = recompute_plan_amounts(plan)
+        errors.extend(amount_issues)
 
     # 3.5 预算
-    if request.budget is not None and expected_total > request.budget:
-        errors.append(
-            issue(
-                "PLAN_OVER_BUDGET",
-                f"方案总价 {expected_total} 超过预算 {request.budget}。",
-                field="total_amount",
-                retryable=True,
-            )
-        )
-
-    # 3.6 交期
-    if plan.expected_delivery_date is None:
-        if request.required_by is not None:
+    with _plan_check(
+            task_id=task_id,
+            step="budget",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if request.budget is not None and expected_total > request.budget:
             errors.append(
                 issue(
-                    "PLAN_DELIVERY_UNKNOWN",
-                    "用户指定了要求到货日期，但无法推算交期，不能确认是否满足。",
-                    field="expected_delivery_date",
+                    "PLAN_OVER_BUDGET",
+                    f"方案总价 {expected_total} 超过预算 {request.budget}。",
+                    field="total_amount",
+                    retryable=True,
                 )
             )
-        else:
-            warnings.append(
+
+    # 3.6 交期
+    with _plan_check(
+            task_id=task_id,
+            step="delivery",
+            errors=errors,
+            warnings=warnings,
+    ):
+        if plan.expected_delivery_date is None:
+            offer_by_part = {
+                offer.part_id: offer
+                for offer in candidates.offers
+                if offer.supplier_id == plan.supplier_id
+            }
+            missing_parts = [
+                f"{item.part_name}（ID {item.part_id}）"
+                for item in plan.items
+                if (
+                    offer_by_part.get(item.part_id) is None
+                    and item.lead_time_days is None
+                )
+                or (
+                    offer_by_part.get(item.part_id) is not None
+                    and offer_by_part[item.part_id].lead_time_days is None
+                )
+            ]
+            missing_detail = (
+                f"无法推算交期的物料：{'、'.join(missing_parts)}。"
+                if missing_parts
+                else ""
+            )
+            if request.required_by is not None:
+                errors.append(
+                    issue(
+                        "PLAN_DELIVERY_UNKNOWN",
+                        "用户指定了要求到货日期，但无法推算交期，"
+                        f"不能确认是否满足。{missing_detail}",
+                        field="expected_delivery_date",
+                    )
+                )
+            else:
+                warnings.append(
+                    issue(
+                        "PLAN_DELIVERY_DATE_UNKNOWN",
+                        "无法从历史数据推算交期，审批时需人工确认。"
+                        f"{missing_detail}",
+                        field="expected_delivery_date",
+                        severity="warning",
+                    )
+                )
+        elif plan.expected_delivery_date < today:
+            errors.append(
                 issue(
-                    "PLAN_DELIVERY_DATE_UNKNOWN",
-                    "无法从历史数据推算交期，审批时需人工确认。",
+                    "PLAN_DELIVERY_DATE_IN_PAST",
+                    "方案预计到货日期早于今天。",
                     field="expected_delivery_date",
-                    severity="warning",
+                    retryable=True,
                 )
             )
-    elif plan.expected_delivery_date < today:
-        errors.append(
-            issue(
-                "PLAN_DELIVERY_DATE_IN_PAST",
-                "方案预计到货日期早于今天。",
-                field="expected_delivery_date",
-                retryable=True,
+        elif request.required_by and plan.expected_delivery_date > request.required_by:
+            errors.append(
+                issue(
+                    "PLAN_DELIVERY_TOO_LATE",
+                    f"方案预计到货 {plan.expected_delivery_date}，"
+                    f"晚于要求日期 {request.required_by}。",
+                    field="expected_delivery_date",
+                    retryable=True,
+                )
             )
-        )
-    elif request.required_by and plan.expected_delivery_date > request.required_by:
-        errors.append(
-            issue(
-                "PLAN_DELIVERY_TOO_LATE",
-                f"方案预计到货 {plan.expected_delivery_date}，"
-                f"晚于要求日期 {request.required_by}。",
-                field="expected_delivery_date",
-                retryable=True,
-            )
-        )
 
     # 3.7 库存缺口：未知就标记未知，不把“查不到”当 0
-    for gap in plan.inventory_gaps:
-        if gap.available_quantity is None:
-            warnings.append(
-                issue(
-                    "INVENTORY_UNKNOWN",
-                    f"物料 {gap.part_id} 未查到库存记录，库存缺口未知。",
-                    field=f"inventory_gaps.{gap.part_id}",
-                    severity="warning",
+    with _plan_check(
+            task_id=task_id,
+            step="inventory",
+            errors=errors,
+            warnings=warnings,
+    ):
+        for gap in plan.inventory_gaps:
+            if gap.available_quantity is None:
+                warnings.append(
+                    issue(
+                        "INVENTORY_UNKNOWN",
+                        f"物料 {gap.part_id} 未查到库存记录，库存缺口未知。",
+                        field=f"inventory_gaps.{gap.part_id}",
+                        severity="warning",
+                    )
                 )
-            )
 
     plan_hash = compute_plan_hash(plan)
     logger.info(

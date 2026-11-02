@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
@@ -110,3 +110,41 @@ async def test_denso_plan_uses_expected_historical_lead_time_to_meet_required_da
     assert plan.expected_delivery_date == date(2026, 11, 10)
     assert plan.items[0].lead_time_source == "expected_delivery"
     assert result.passed is True
+
+
+@pytest.mark.anyio
+async def test_plan_builder_uses_business_date_for_aware_now():
+    request = ProcurementRequest(
+        items=[RequestedItem(part_id=65, part_name="火花塞", quantity=10)],
+        warehouse_location="华东仓",
+        required_by=date(2026, 11, 11),
+    )
+    candidates = CandidateSet(
+        offers=[
+            SupplierOffer(
+                supplier_id=31,
+                supplier_name="测试供应商",
+                part_id=65,
+                part_name="火花塞",
+                unit_price=Decimal("32.00"),
+                price_source="part_master",
+                lead_time_days=8,
+                lead_time_source="actual_delivery",
+            )
+        ]
+    )
+    proposal = await DeterministicPlanProposer().propose(
+        request, candidates, feedback=[]
+    )
+
+    plan = DefaultPlanBuilder().build(
+        task_id="TASK-TZ",
+        version=1,
+        request=request,
+        candidates=candidates,
+        proposal=proposal,
+        # UTC 11-02 17:00 = 上海 11-03 01:00
+        now=datetime(2026, 11, 2, 17, 0, tzinfo=timezone.utc),
+    )
+
+    assert plan.expected_delivery_date == date(2026, 11, 11)

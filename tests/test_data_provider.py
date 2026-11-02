@@ -183,6 +183,94 @@ async def test_collect_uses_expected_delivery_when_actual_delivery_is_missing():
 
 
 @pytest.mark.anyio
+async def test_historical_lead_time_uses_calendar_date_difference():
+    tools = make_tools(
+        order_details=[
+            {
+                "partId": 1,
+                "partDetail": {"id": 1, "name": "活塞环组件"},
+                "supplierId": 4,
+                "unitPrice": 110,
+                "orderTime": "2026-09-01T10:00:00",
+                "actualDeliveryDate": "2026-09-09T09:00:00",
+            }
+        ]
+    )
+    provider = McpProcurementDataProvider(tools, active_supplier_statuses={1})
+
+    candidates = await provider.collect(make_request())
+
+    offer = candidates.offers[0]
+    assert offer.lead_time_days == 8
+    assert offer.lead_time_source == "actual_delivery"
+
+
+@pytest.mark.anyio
+async def test_historical_lead_time_converts_aware_times_to_business_timezone():
+    tools = make_tools(
+        order_details=[
+            {
+                "partId": 1,
+                "partDetail": {"id": 1, "name": "活塞环组件"},
+                "supplierId": 4,
+                "unitPrice": 110,
+                # 上海：2026-09-01 23:30 → 2026-09-10 00:30
+                "orderTime": "2026-09-01T15:30:00Z",
+                "actualDeliveryDate": "2026-09-09T16:30:00Z",
+            }
+        ]
+    )
+    provider = McpProcurementDataProvider(tools, active_supplier_statuses={1})
+
+    candidates = await provider.collect(make_request())
+
+    assert candidates.offers[0].lead_time_days == 9
+
+
+@pytest.mark.anyio
+async def test_historical_lead_time_keeps_naive_business_local_date_semantics():
+    tools = make_tools(
+        order_details=[
+            {
+                "partId": 1,
+                "partDetail": {"id": 1, "name": "活塞环组件"},
+                "supplierId": 4,
+                "unitPrice": 110,
+                "orderTime": "2026-09-01T23:30:00",
+                "actualDeliveryDate": "2026-09-09T00:30:00",
+            }
+        ]
+    )
+    provider = McpProcurementDataProvider(tools, active_supplier_statuses={1})
+
+    candidates = await provider.collect(make_request())
+
+    assert candidates.offers[0].lead_time_days == 8
+
+
+@pytest.mark.anyio
+async def test_historical_delivery_before_order_is_not_a_negative_lead_time():
+    tools = make_tools(
+        order_details=[
+            {
+                "partId": 1,
+                "partDetail": {"id": 1, "name": "活塞环组件"},
+                "supplierId": 4,
+                "unitPrice": 110,
+                "orderTime": "2026-09-09T10:00:00",
+                "actualDeliveryDate": "2026-09-01T09:00:00",
+            }
+        ]
+    )
+    provider = McpProcurementDataProvider(tools, active_supplier_statuses={1})
+
+    candidates = await provider.collect(make_request())
+
+    assert candidates.offers[0].lead_time_days is None
+    assert candidates.offers[0].lead_time_source is None
+
+
+@pytest.mark.anyio
 async def test_collect_falls_back_to_part_master_price():
     provider = McpProcurementDataProvider(
         make_tools(order_details=[]), active_supplier_statuses={1}

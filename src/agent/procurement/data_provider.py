@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from statistics import median
 from typing import Any
 
+from agent.procurement.config import as_business_datetime
 from agent.procurement.models import (
     CandidateSet,
     InventorySnapshot,
@@ -106,8 +107,8 @@ def _parse_datetime(value: Any) -> datetime | None:
                     continue
         if parsed is None:
             return None
-    # 历史数据的时区并不统一，统一去掉 tzinfo 后再做日期差
-    return parsed.replace(tzinfo=None) if parsed.tzinfo else parsed
+    # 带时区值先转换到业务时区；无时区存量值按 ERP 业务本地时间解释。
+    return as_business_datetime(parsed)
 
 
 def _unwrap_mcp_content(result: Any) -> Any:
@@ -248,12 +249,12 @@ def _normalize_order_detail(
     lead_time_source = None
     if order_time:
         if actual_delivery:
-            days = (actual_delivery - order_time).days
+            days = (actual_delivery.date() - order_time.date()).days
             if days >= 0:
                 lead_time_days = days
                 lead_time_source = "actual_delivery"
         if lead_time_days is None and expected_delivery:
-            days = (expected_delivery - order_time).days
+            days = (expected_delivery.date() - order_time.date()).days
             if days >= 0:
                 lead_time_days = days
                 lead_time_source = "expected_delivery"
@@ -485,16 +486,20 @@ class McpProcurementDataProvider:
             candidates = [_normalize_part(record)] if record else []
             candidates = [p for p in candidates if p["id"] == item.part_id]
             if candidates and item.part_code:
-                actual_code = str(candidates[0].get("code") or "").strip()
-                provided_code = str(item.part_code).strip()
-                if actual_code and actual_code.casefold() != provided_code.casefold():
+                requested_code = str(item.part_code).strip().lower()
+                formal_code = str(candidates[0].get("code") or "").strip().lower()
+                if formal_code != requested_code:
                     raise PartResolutionError(
                         code="PART_CODE_MISMATCH",
                         message=(
-                            f"物料 ID {item.part_id} 对应编码 {actual_code}，"
-                            f"与请求中的编码 {provided_code} 不一致；请确认物料 ID 或编码。"
+                            f"物料 ID {item.part_id} 的正式编码为 "
+                            f"{candidates[0].get('code') or '未知'}，"
+                            f"与用户提供的编码 {item.part_code} 不一致，"
+                            "请确认使用哪个标识。"
                         ),
                     )
+            if candidates:
+                item.part_name = candidates[0]["name"]
         elif item.part_name:
             candidates = await self._search_parts(item.part_name)
             if item.part_code:
