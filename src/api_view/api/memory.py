@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from agent.config import REDIS_CLIENT, STORE
 from agent.memory.audit import log_memory_event
 from agent.memory.identity import preferences_key
+from agent.memory.metrics import metrics
 from agent.memory.preference_lock import RedisPreferenceLock
 from agent.memory.preference_service import (
     PreferenceMemoryService,
@@ -24,7 +25,7 @@ from agent.memory.preferences import (
 )
 from agent.memory.user_memory_backend import UserMemoryBackend
 from api_view.auth.models import AuthenticatedUser
-from api_view.auth.permissions import require_password_ready
+from api_view.auth.permissions import require_password_ready, require_roles
 
 router = APIRouter()
 
@@ -85,6 +86,14 @@ def _preferences_view(preferences) -> dict:
             "max_queries": MAX_RECENT_QUERIES,
         },
     }
+
+
+@router.get("/memory/metrics")
+async def memory_metrics(
+    _admin=Depends(require_roles("admin")),
+):
+    """进程内最小记忆指标；生产环境可替换为 Prometheus 导出。"""
+    return metrics.snapshot()
 
 
 @router.get("/memory/preferences")

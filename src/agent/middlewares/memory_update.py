@@ -22,6 +22,7 @@ from agent.memory.identity import (
     preferences_key,
     require_user_id,
 )
+from agent.memory.metrics import metrics
 from agent.memory.preference_service import PreferenceMemoryService
 
 logger = MyLogger().get_logger()
@@ -76,6 +77,11 @@ class MemoryUpdateMiddleware(AgentMiddleware):
             if not candidates:
                 return None
 
+            metrics.inc("memory_candidates_total", value=len(candidates))
+            message_ids = sorted(
+                {candidate.source_message_id for candidate in candidates}
+            )
+
             result = await self.preference_service.apply_candidates(
                 user_id,
                 candidates,
@@ -106,6 +112,7 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                     thread_id=thread_id,
                     outcome="error",
                     reason=result.reason,
+                    message_ids=message_ids,
                 )
                 return None
 
@@ -122,6 +129,17 @@ class MemoryUpdateMiddleware(AgentMiddleware):
                     result.rejected_count,
                     request_id,
                     thread_id,
+                )
+                log_memory_event(
+                    op="memory.update_preferences",
+                    user_id=user_id,
+                    namespace=(user_id,),
+                    path=preferences_key(user_id),
+                    request_id=request_id,
+                    thread_id=thread_id,
+                    outcome="ok",
+                    revision=result.revision,
+                    message_ids=message_ids,
                 )
             else:
                 logger.debug(

@@ -20,6 +20,7 @@ _ALLOWED_FIELDS = (
     "reason",
     "size",
     "revision",
+    "message_ids",
 )
 
 

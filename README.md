@@ -282,6 +282,7 @@ result = await graph.ainvoke(
 - `MemoryUpdateMiddleware` 每轮只自动维护 `recent_suppliers` / `recent_queries`，不修改显式偏好。
 - 记忆先生成 `MemoryCandidate`（来源、置信度、消息 ID），再按 `origin/type/confidence` 分级持久化；推断供应商只取真实工具结果，显式偏好走专用工具。
 - 用户可在「我的记忆」面板查看/遗忘单条近期记忆或清空全部偏好；删除会话与删除记忆是不同操作。recent suppliers 默认 90 天、queries 30 天过期。
+- 记忆读写/冲突/候选/解析失败提供进程内指标；管理员可通过 `GET /api/memory/metrics` 查看。
 
 ## 扩展开发
 

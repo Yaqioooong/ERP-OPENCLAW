@@ -14,6 +14,7 @@ from agent.memory.candidates import (
     MemoryCandidate,
 )
 from agent.memory.identity import preferences_key, validate_user_id
+from agent.memory.metrics import metrics
 from agent.memory.preference_lock import (
     PreferenceLock,
     PreferenceLockUnavailable,
@@ -184,6 +185,13 @@ class PreferenceMemoryService:
                 elif candidate.value not in inferred_queries:
                     inferred_queries.append(candidate.value)
 
+        for reason, count in rejected.items():
+            metrics.inc(
+                "memory_candidates_rejected_total",
+                {"reason": reason},
+                count,
+            )
+
         if not accepted:
             return MemoryCommitResult(
                 ok=True,
@@ -349,12 +357,14 @@ class PreferenceMemoryService:
         normalized = dict(updates)
         unknown = set(normalized) - set(EXPLICIT_FIELDS)
         if not normalized or unknown:
+            metrics.inc("memory_explicit_save_failure_total")
             return _failure("invalid_request")
 
         for memory_type, value in normalized.items():
             try:
                 self._validate_explicit_value(memory_type, value)
             except PreferenceSchemaError:
+                metrics.inc("memory_explicit_save_failure_total")
                 return _failure("invalid_request")
 
         source_id = source_message_id or request_id or "explicit-tool"
@@ -369,14 +379,41 @@ class PreferenceMemoryService:
             )
             for field, value in normalized.items()
         ]
-        return await self.apply_candidates(
+        result = await self.apply_candidates(
             user_id,
             candidates,
             request_id=request_id,
             thread_id=thread_id,
         )
+        if not result.ok:
+            metrics.inc("memory_explicit_save_failure_total")
+        return result
 
     async def _commit(
+        self,
+        user_id: str,
+        mutate: Callable[[UserPreferences, bool], tuple[UserPreferences, bool]],
+        *,
+        request_id: str,
+        thread_id: str,
+        allow_create: bool,
+    ) -> MemoryCommitResult:
+        result = await self._commit_impl(
+            user_id,
+            mutate,
+            request_id=request_id,
+            thread_id=thread_id,
+            allow_create=allow_create,
+        )
+        if result.ok and result.reason == "ok":
+            metrics.inc("memory_write_success_total")
+        elif result.reason == "conflict":
+            metrics.inc("memory_write_conflict_total")
+        elif not result.ok:
+            metrics.inc("memory_write_failure_total")
+        return result
+
+    async def _commit_impl(
         self,
         user_id: str,
         mutate: Callable[[UserPreferences, bool], tuple[UserPreferences, bool]],
@@ -503,10 +540,13 @@ class PreferenceMemoryService:
         try:
             result = await self._backend.aread(path)
         except Exception:
+            metrics.inc("memory_read_failure_total")
             return None, "read_failed"
         if result.error:
             if "not found" in result.error.lower():
+                metrics.inc("memory_read_success_total")
                 return None, "not_found"
+            metrics.inc("memory_read_failure_total")
             return None, "read_failed"
 
         file_data = result.file_data or {}
@@ -520,6 +560,10 @@ class PreferenceMemoryService:
         else:
             text = str(content or "")
         try:
-            return load_preferences(text), "ok"
+            preferences = load_preferences(text)
+            metrics.inc("memory_read_success_total")
+            return preferences, "ok"
         except PreferenceSchemaError:
+            metrics.inc("memory_read_failure_total")
+            metrics.inc("memory_parse_failure_total")
             return None, "invalid_schema"
