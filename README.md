@@ -123,6 +123,7 @@ LANGSMITH_PROJECT=...
 - `AUTH_DEV_DEMO_USER_ID`：仅开发环境；配置后登录页出现“开发登录”入口，生产环境不会启用。
 - `AUTH_REGISTER_MAX_ATTEMPTS` / `AUTH_REGISTER_WINDOW_SECONDS`：同一 IP 的注册频率限制，默认 5 次/小时。
 - `AUTH_LOGIN_MAX_FAILURES` / `AUTH_LOGIN_WINDOW_SECONDS`：同一用户名+IP 的登录失败限制，默认 10 次/5 分钟。
+- `PREFERENCE_SUPPLIER_TTL_DAYS` / `PREFERENCE_QUERY_TTL_DAYS`：近期供应商/查询的过期天数，默认 90 / 30。
 
 ### 4. 运行评测
 
@@ -272,14 +273,15 @@ result = await graph.ainvoke(
 
 `CompositeBackend` 按路径分流：`/memories/` 下的读写被路由到 Redis `StoreBackend`，命名空间为 `(user_id,)`；其余路径（`/analysis`、`/data`、`/skills`）落在 OpenSandbox 沙箱。
 
-偏好文件使用 Pydantic 模型 `UserPreferences` 严格校验（`schema_version: 2`，含 `revision`）：
+偏好文件使用 Pydantic 模型 `UserPreferences` 严格校验（`schema_version: 3`，含 `revision` 与 recent 时间条目）：
 
 - `preferred_output` 只允许 `table` / `chart`；
 - `preferred_chart_type` 只允许 `generate_visualization` 支持的图表类型；
 - 未知字段、非法枚举、错误类型、缩进错误一律拒绝写入并告警，不覆盖原文件；
-- 无版本或 `schema_version: 0` 的旧文件按 v0→v1 规则迁移，显式字段保留；
+- 无版本或 `schema_version: 0/1/2` 的旧文件按规则迁移到 v3，显式字段保留；
 - `MemoryUpdateMiddleware` 每轮只自动维护 `recent_suppliers` / `recent_queries`，不修改显式偏好。
 - 记忆先生成 `MemoryCandidate`（来源、置信度、消息 ID），再按 `origin/type/confidence` 分级持久化；推断供应商只取真实工具结果，显式偏好走专用工具。
+- 用户可在「我的记忆」面板查看/遗忘单条近期记忆或清空全部偏好；删除会话与删除记忆是不同操作。recent suppliers 默认 90 天、queries 30 天过期。
 
 ## 扩展开发
 

@@ -10,7 +10,14 @@ from agent.memory.preference_lock import (
     PreferenceLockUnavailable,
 )
 from agent.memory.preference_service import PreferenceMemoryService
-from agent.memory.preferences import dump_preferences, load_preferences
+from datetime import datetime, timezone
+
+from agent.memory.preferences import (
+    RecentMemoryItem,
+    dump_preferences,
+    load_preferences,
+    recent_values,
+)
 from tests.test_memory_middleware import MemoryStorageBackend
 
 
@@ -36,8 +43,8 @@ async def test_concurrent_auto_updates_keep_both():
     assert {first.revision, second.revision} == {1, 2}
 
     prefs = load_preferences(backend.content).preferences
-    assert set(prefs.recent_suppliers) == {"供应商A", "供应商B"}
-    assert set(prefs.recent_queries) == {"查询A", "查询B"}
+    assert set(recent_values(prefs.recent_suppliers)) == {"供应商A", "供应商B"}
+    assert set(recent_values(prefs.recent_queries)) == {"查询A", "查询B"}
     assert prefs.revision == 2
 
 
@@ -148,7 +155,7 @@ async def test_explicit_update_preserves_auto_fields():
     prefs = load_preferences(backend.content).preferences
     assert prefs.preferred_output == "table"
     assert prefs.preferred_currency == "USD"
-    assert prefs.recent_suppliers == ["供应商A"]
+    assert recent_values(prefs.recent_suppliers) == ["供应商A"]
     assert prefs.revision == 2
 
 
@@ -186,7 +193,17 @@ async def test_revision_conflict_remerges_latest_content():
             if self.calls == 2 and self.content is None:
                 from agent.memory.preferences import UserPreferences
 
-                race = UserPreferences(recent_suppliers=["竞态供应商"], revision=1)
+                now = datetime.now(timezone.utc)
+                race = UserPreferences(
+                    recent_suppliers=[
+                        RecentMemoryItem(
+                            value="竞态供应商",
+                            created_at=now,
+                            last_seen_at=now,
+                        )
+                    ],
+                    revision=1,
+                )
                 self.content = dump_preferences(race)
                 return ReadResult(file_data={"content": self.content})
             return result
@@ -197,7 +214,7 @@ async def test_revision_conflict_remerges_latest_content():
 
     assert result.ok
     prefs = load_preferences(backend.content).preferences
-    assert set(prefs.recent_suppliers) == {"竞态供应商", "供应商A"}
+    assert set(recent_values(prefs.recent_suppliers)) == {"竞态供应商", "供应商A"}
     assert prefs.revision == 2
 
 
@@ -257,7 +274,7 @@ async def test_apply_candidates_enforces_origin_and_whitelist():
 
     prefs = load_preferences(backend.content).preferences
     assert prefs.preferred_output == "table"
-    assert prefs.recent_suppliers == ["供应商A"]
+    assert recent_values(prefs.recent_suppliers) == ["供应商A"]
 
 
 @pytest.mark.anyio
@@ -288,3 +305,122 @@ async def test_inferred_candidates_never_override_explicit_values():
     prefs = load_preferences(backend.content).preferences
     assert prefs.preferred_output == "table"
     assert prefs.revision == 2
+
+
+@pytest.mark.anyio
+async def test_delete_recent_item_keeps_other_preferences():
+    backend = MemoryStorageBackend()
+    service = make_service(backend)
+    from agent.memory.candidates import MemoryCandidate
+
+    await service.apply_candidates(
+        "u_a",
+        [
+            MemoryCandidate(
+                memory_type="preferred_output",
+                value="table",
+                origin="explicit",
+                source_message_id="h1",
+                confidence=1.0,
+                source="explicit_tool",
+            ),
+            MemoryCandidate(
+                memory_type="recent_suppliers",
+                value="A",
+                origin="inferred",
+                source_message_id="t1",
+                confidence=0.9,
+                source="tool_result",
+            ),
+            MemoryCandidate(
+                memory_type="recent_suppliers",
+                value="B",
+                origin="inferred",
+                source_message_id="t1",
+                confidence=0.9,
+                source="tool_result",
+            ),
+        ],
+    )
+    result = await service.delete_recent_item("u_a", "recent_suppliers", "A")
+    assert result.ok
+    assert result.changed
+    prefs = load_preferences(backend.content).preferences
+    assert prefs.preferred_output == "table"
+    assert recent_values(prefs.recent_suppliers) == ["B"]
+
+
+@pytest.mark.anyio
+async def test_delete_missing_item_does_not_write():
+    backend = MemoryStorageBackend()
+    service = make_service(backend)
+    result = await service.delete_recent_item("u_a", "recent_suppliers", "missing")
+    assert not result.ok
+    assert result.reason == "not_found"
+    assert backend.writes == []
+
+
+@pytest.mark.anyio
+async def test_clear_all_resets_preferences_without_touching_other_state():
+    backend = MemoryStorageBackend()
+    service = make_service(backend)
+    from agent.memory.candidates import MemoryCandidate
+
+    await service.apply_candidates(
+        "u_a",
+        [
+            MemoryCandidate(
+                memory_type="preferred_output",
+                value="table",
+                origin="explicit",
+                source_message_id="h1",
+                confidence=1.0,
+                source="explicit_tool",
+            ),
+            MemoryCandidate(
+                memory_type="recent_suppliers",
+                value="A",
+                origin="inferred",
+                source_message_id="t1",
+                confidence=0.9,
+                source="tool_result",
+            ),
+        ],
+    )
+    result = await service.clear_all("u_a")
+    assert result.ok
+    prefs = load_preferences(backend.content).preferences
+    assert prefs.preferred_output is None
+    assert prefs.recent_suppliers == []
+    assert prefs.recent_queries == []
+    assert prefs.revision == 2
+
+
+@pytest.mark.anyio
+async def test_get_preferences_filters_expired_items():
+    from datetime import datetime, timedelta, timezone
+
+    from agent.memory.preferences import (
+        RecentMemoryItem,
+        UserPreferences,
+        dump_preferences,
+    )
+
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=100)
+    recent = now - timedelta(days=2)
+    prefs = UserPreferences(
+        recent_suppliers=[
+            RecentMemoryItem(value="old", created_at=old, last_seen_at=old),
+            RecentMemoryItem(value="fresh", created_at=recent, last_seen_at=recent),
+        ],
+        recent_queries=[
+            RecentMemoryItem(value="old-query", created_at=old, last_seen_at=old),
+        ],
+    )
+    backend = MemoryStorageBackend(dump_preferences(prefs))
+    service = make_service(backend)
+    view = await service.get_preferences("u_a")
+    assert recent_values(view.recent_suppliers) == ["fresh"]
+    assert view.recent_queries == []
+    assert backend.writes == []

@@ -10,7 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api_view.web_config import API_TITLE, API_VERSION, API_DESCRIPTION
-from api_view.api import chat, history, procurement
+from api_view.api import chat, history, memory, procurement
 from api_view.agent_loader import agent_loader
 from api_view.auth import config as auth_config
 from api_view.auth.admin_router import router as admin_router
@@ -110,6 +110,8 @@ app.include_router(admin_router, prefix="/api", tags=["用户管理"])
 app.include_router(chat.router, prefix="/api", tags=["对话"])
 # 历史记录相关接口
 app.include_router(history.router, prefix="/api", tags=["历史记录"])
+# 长期记忆管理接口
+app.include_router(memory.router, prefix="/api", tags=["长期记忆"])
 # 采购任务相关接口
 app.include_router(procurement.router, prefix="/api", tags=["采购任务"])
 

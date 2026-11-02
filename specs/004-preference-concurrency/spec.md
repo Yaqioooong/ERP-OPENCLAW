@@ -2,6 +2,8 @@
 
 - 规格编号：`004`
 - 状态：已实现（2026-10-29）
+
+> 注：006 已将 schema 升级为 v3（recent 项带时间），本规格的 v2 为 004 交付时状态。
 - 提出人：待填
 - 日期：2026-10-29
 - 相关代码：[memory_update.py:229](src/agent/middlewares/memory_update.py:229)

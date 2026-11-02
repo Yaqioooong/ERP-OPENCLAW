@@ -11,7 +11,7 @@ from deepagents.backends.protocol import ReadResult, WriteResult
 from agent.memory.candidate_generator import MemoryCandidateGenerator
 from agent.memory.preference_lock import InMemoryPreferenceLock
 from agent.memory.preference_service import PreferenceMemoryService
-from agent.memory.preferences import load_preferences
+from agent.memory.preferences import load_preferences, recent_values
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.schema import ProcurementContext
 
@@ -117,7 +117,7 @@ async def test_middleware_writes_only_own_preferences_path():
     assert "博世" in content
     prefs = load_preferences(content).preferences
     assert prefs.revision == 1
-    assert prefs.schema_version == 2
+    assert prefs.schema_version == 3
 
 
 @pytest.mark.anyio
@@ -152,7 +152,7 @@ async def test_middleware_does_not_log_content():
 @pytest.mark.anyio
 async def test_invalid_preferences_are_not_written():
     backend = MemoryStorageBackend(
-        "schema_version: 2\nrevision: 0\npreferred_output: pie\n"
+        "schema_version: 3\nrevision: 0\npreferred_output: pie\n"
     )
     middleware = make_middleware(backend)
     await middleware.aafter_agent(_state(), runtime_for("u_a"))
@@ -164,7 +164,7 @@ async def test_unknown_field_is_not_written_and_value_is_not_logged():
     from loguru import logger
 
     backend = MemoryStorageBackend(
-        "schema_version: 2\nrevision: 0\npreferred_output: table\n"
+        "schema_version: 3\nrevision: 0\npreferred_output: table\n"
         "secret_field: TOP_SECRET_VALUE\n"
     )
     middleware = make_middleware(backend)
@@ -184,7 +184,7 @@ async def test_unknown_field_is_not_written_and_value_is_not_logged():
 @pytest.mark.anyio
 async def test_auto_update_preserves_explicit_preferences():
     backend = MemoryStorageBackend(
-        "schema_version: 2\n"
+        "schema_version: 3\n"
         "revision: 7\n"
         "preferred_output: table\n"
         "preferred_chart_type: line\n"
@@ -203,9 +203,9 @@ async def test_auto_update_preserves_explicit_preferences():
     assert prefs.preferred_chart_type == "line"
     assert prefs.preferred_currency == "USD"
     assert prefs.preferred_language == "en"
-    assert prefs.schema_version == 2
+    assert prefs.schema_version == 3
     assert prefs.revision == 8
-    assert "博世" in prefs.recent_suppliers
+    assert "博世" in recent_values(prefs.recent_suppliers)
 
 
 @pytest.mark.anyio
@@ -218,7 +218,7 @@ async def test_legacy_preferences_are_migrated_even_without_new_entities():
     _, _, content = backend.writes[0]
     loaded = load_preferences(content)
     assert loaded.migrated is False
-    assert loaded.preferences.schema_version == 2
+    assert loaded.preferences.schema_version == 3
     assert loaded.preferences.revision == 1
     assert loaded.preferences.preferred_output == "chart"
 
@@ -227,9 +227,9 @@ async def test_legacy_preferences_are_migrated_even_without_new_entities():
 @pytest.mark.parametrize(
     "content",
     [
-        "schema_version: 2\npreferred_output: table\n  bad: x\n",
-        "schema_version: 2\npreferred_output: pie\n",
-        "schema_version: 2\nrecent_suppliers: not-a-list\n",
+        "schema_version: 3\npreferred_output: table\n  bad: x\n",
+        "schema_version: 3\npreferred_output: pie\n",
+        "schema_version: 3\nrecent_suppliers: not-a-list\n",
     ],
 )
 async def test_invalid_preference_structures_never_write(content):

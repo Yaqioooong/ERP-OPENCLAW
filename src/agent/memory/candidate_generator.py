@@ -15,7 +15,7 @@ from agent.memory.candidates import (
     EXPLICIT_MEMORY_TYPES,
     MemoryCandidate,
 )
-from agent.memory.preferences import UserPreferences
+from agent.memory.preferences import CURRENT_SCHEMA_VERSION, UserPreferences
 
 _ERP_KEYWORDS = (
     "供应商", "供应", "采购", "订单", "价格", "比价", "报价", "比较",
@@ -218,7 +218,7 @@ class MemoryCandidateGenerator:
             try:
                 UserPreferences.model_validate(
                     {
-                        "schema_version": 2,
+                        "schema_version": CURRENT_SCHEMA_VERSION,
                         "revision": 0,
                         memory_type: value,
                     }

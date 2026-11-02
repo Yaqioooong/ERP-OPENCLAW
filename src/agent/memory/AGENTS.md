@@ -19,7 +19,7 @@
 - 如果文件不存在（新用户首次使用）→ 调用 `save_user_preferences` 创建包含以下默认偏好的文件：
 
 ```yaml
-schema_version: 2
+schema_version: 3
 revision: 0
 preferred_output: chart          # 只允许 table / chart
 preferred_chart_type: bar        # generate_visualization 支持的 26 种 chart_type
@@ -31,7 +31,8 @@ recent_queries: []
 
 > 偏好文件由 Pydantic 模型严格校验。不要写入未知字段，不要使用未列出的枚举值；
 > 非法文件不会被自动覆盖，自动更新只维护 `recent_suppliers` / `recent_queries`。
-> 显式偏好必须调用 `save_user_preferences` 工具保存；不要用 `write_file`/`edit_file`
+> 删除单条近期记忆/清空记忆由「我的记忆」面板完成；显式偏好修改必须调用
+> `save_user_preferences`；不要用 `write_file`/`edit_file`
 > 直接改 `/memories/{user_id}/preferences.md`，该路径的通用写入会被拒绝。
 > 工具返回 `saved=false` 时必须明确告诉用户“未保存”，不能声称已保存。
 
@@ -170,18 +171,20 @@ web_search(query="用户的问题关键词")
 
 ### 用户偏好文件格式
 ```yaml
-schema_version: 2
+schema_version: 3
 revision: 0
 preferred_output: table          # "table" 或 "chart"
 preferred_chart_type: bar        # generate_visualization 支持的 26 种类型之一
 preferred_currency: CNY          # "CNY", "USD", "EUR", "JPY", "HKD", "GBP"
 preferred_language: zh           # "zh", "en"
-recent_suppliers:                # 最近使用/关注的供应商列表
-  - 博世
-  - 大陆
+recent_suppliers:                # 最近使用/关注的供应商，最多 10 条
+  - value: 博世
+    created_at: 2026-10-01T08:00:00+00:00
+    last_seen_at: 2026-10-20T09:30:00+00:00
 recent_queries:                  # 最近 5 条分析需求摘要
-  - 刹车片价格对比分析
-  - Q2 线束采购预算评估
+  - value: 刹车片价格对比分析
+    created_at: 2026-10-18T10:00:00+00:00
+    last_seen_at: 2026-10-18T10:00:00+00:00
 ```
 
 ### 何时更新记忆

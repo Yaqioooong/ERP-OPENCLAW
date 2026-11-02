@@ -75,6 +75,10 @@
             <MonitorSmartphone :size="14" />
             退出所有设备
           </button>
+          <button type="button" @click="$emit('open-memory')">
+            <Brain :size="14" />
+            我的记忆
+          </button>
           <button v-if="isAdmin" type="button" @click="$emit('open-admin')">
             <ShieldCheck :size="14" />
             用户管理
@@ -103,6 +107,7 @@
 <script setup>
 import { computed } from 'vue'
 import {
+  Brain,
   ChevronDown,
   ClipboardList,
   KeyRound,
@@ -139,6 +144,7 @@ defineEmits([
   'logout-all',
   'change-password',
   'open-admin',
+  'open-memory',
 ])
 
 const isAdmin = computed(() => (props.user?.roles || []).includes('admin'))

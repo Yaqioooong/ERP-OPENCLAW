@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Sequence
 
 from pydantic import ValidationError
@@ -20,12 +21,16 @@ from agent.memory.preference_lock import (
 )
 from agent.memory.preferences import (
     CURRENT_SCHEMA_VERSION,
+    MAX_RECENT_QUERIES,
+    MAX_RECENT_SUPPLIERS,
     LoadedPreferences,
     PreferenceSchemaError,
     UserPreferences,
     default_preferences,
     dump_preferences,
     load_preferences,
+    merge_recent_values,
+    prune_recent,
 )
 
 EXPLICIT_FIELDS = (
@@ -44,7 +49,12 @@ _REASON_MESSAGES = {
     "lock_unavailable": "偏好存储暂不可用，本次未保存",
     "conflict": "偏好版本冲突，本次未保存",
     "permission_denied": "无权写入该用户偏好",
+    "not_found": "记忆不存在",
 }
+
+
+class PreferenceItemNotFound(Exception):
+    """指定的 recent 项不存在。"""
 
 
 @dataclass(frozen=True)
@@ -186,21 +196,30 @@ class PreferenceMemoryService:
             )
 
         def mutate(current: UserPreferences, migrated: bool):
+            current = prune_recent(current)
             payload = current.model_dump(mode="json")
             for memory_type, (_, value) in explicit_values.items():
                 payload[memory_type] = value
 
-            suppliers = list(current.recent_suppliers)
-            for value in inferred_suppliers:
-                if value not in suppliers:
-                    suppliers.append(value)
-            queries = list(inferred_queries)
-            for value in current.recent_queries:
-                if value not in queries:
-                    queries.append(value)
-
-            payload["recent_suppliers"] = suppliers[:10]
-            payload["recent_queries"] = queries[:5]
+            now = datetime.now(timezone.utc)
+            suppliers = merge_recent_values(
+                current.recent_suppliers,
+                inferred_suppliers,
+                limit=MAX_RECENT_SUPPLIERS,
+                now=now,
+            )
+            queries = merge_recent_values(
+                current.recent_queries,
+                inferred_queries,
+                limit=MAX_RECENT_QUERIES,
+                now=now,
+            )
+            payload["recent_suppliers"] = [
+                item.model_dump(mode="json") for item in suppliers
+            ]
+            payload["recent_queries"] = [
+                item.model_dump(mode="json") for item in queries
+            ]
             try:
                 candidate = UserPreferences.model_validate(payload)
             except ValidationError as exc:
@@ -225,6 +244,81 @@ class PreferenceMemoryService:
             applied_count=len(accepted),
             rejected_count=sum(rejected.values()),
             rejected_reasons=rejected,
+        )
+
+    async def get_preferences(self, user_id: str) -> UserPreferences:
+        """只读快照；过期项在视图层过滤，不写 revision。"""
+        current, reason = await self._read(user_id)
+        if reason == "not_found":
+            return default_preferences()
+        if reason != "ok":
+            raise PreferenceSchemaError("read_failed")
+        assert current is not None
+        return prune_recent(current.preferences)
+
+    async def delete_recent_item(
+        self,
+        user_id: str,
+        memory_type: str,
+        value: str,
+        *,
+        request_id: str = "",
+        thread_id: str = "",
+    ) -> MemoryCommitResult:
+        if memory_type not in {"recent_suppliers", "recent_queries"}:
+            return _failure("invalid_request")
+        if not isinstance(value, str) or not value.strip():
+            return _failure("invalid_request")
+
+        def mutate(current: UserPreferences, migrated: bool):
+            current = prune_recent(current)
+            payload = current.model_dump(mode="json")
+            items = list(getattr(current, memory_type))
+            remaining = [item for item in items if item.value != value]
+            if len(remaining) == len(items):
+                raise PreferenceItemNotFound(value)
+            payload[memory_type] = [
+                item.model_dump(mode="json") for item in remaining
+            ]
+            try:
+                candidate = UserPreferences.model_validate(payload)
+            except ValidationError as exc:
+                raise PreferenceSchemaError(
+                    "invalid_request",
+                    {str(error["loc"][0]): str(error["msg"]) for error in exc.errors()},
+                ) from exc
+            return candidate, candidate != current
+
+        try:
+            return await self._commit(
+                user_id,
+                mutate,
+                request_id=request_id,
+                thread_id=thread_id,
+                allow_create=False,
+            )
+        except PreferenceItemNotFound:
+            return _failure("not_found")
+
+    async def clear_all(
+        self,
+        user_id: str,
+        *,
+        request_id: str = "",
+        thread_id: str = "",
+    ) -> MemoryCommitResult:
+        def mutate(current: UserPreferences, migrated: bool):
+            payload = default_preferences().model_dump(mode="json")
+            payload["revision"] = current.revision
+            candidate = UserPreferences.model_validate(payload)
+            return candidate, candidate != current
+
+        return await self._commit(
+            user_id,
+            mutate,
+            request_id=request_id,
+            thread_id=thread_id,
+            allow_create=False,
         )
 
     @staticmethod

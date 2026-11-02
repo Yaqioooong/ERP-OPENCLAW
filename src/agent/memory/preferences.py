@@ -1,13 +1,20 @@
 """用户偏好记忆的唯一 Pydantic 模型、解析、迁移与序列化。"""
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
+
+RECENT_SUPPLIER_TTL_DAYS = int(os.getenv("PREFERENCE_SUPPLIER_TTL_DAYS", "90"))
+RECENT_QUERY_TTL_DAYS = int(os.getenv("PREFERENCE_QUERY_TTL_DAYS", "30"))
+MAX_RECENT_SUPPLIERS = 10
+MAX_RECENT_QUERIES = 5
 
 PreferredOutput = Literal["table", "chart"]
 Currency = Literal["CNY", "USD", "EUR", "JPY", "HKD", "GBP"]
@@ -44,6 +51,33 @@ ChartType = Literal[
 ]
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class RecentMemoryItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str = Field(min_length=1, max_length=500)
+    created_at: datetime
+    last_seen_at: datetime
+
+    @field_validator("created_at", "last_seen_at")
+    @classmethod
+    def _aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    @field_validator("last_seen_at")
+    @classmethod
+    def _not_before_created(cls, value: datetime, info) -> datetime:
+        created = info.data.get("created_at")
+        if created is not None and value < created:
+            raise ValueError("last_seen_at 不能早于 created_at")
+        return value
+
+
 class UserPreferences(BaseModel):
     """偏好文件的结构化表示。
 
@@ -58,8 +92,12 @@ class UserPreferences(BaseModel):
     preferred_chart_type: ChartType | None = None
     preferred_currency: Currency | None = None
     preferred_language: Language | None = None
-    recent_suppliers: list[str] = Field(default_factory=list, max_length=10)
-    recent_queries: list[str] = Field(default_factory=list, max_length=5)
+    recent_suppliers: list[RecentMemoryItem] = Field(
+        default_factory=list, max_length=MAX_RECENT_SUPPLIERS
+    )
+    recent_queries: list[RecentMemoryItem] = Field(
+        default_factory=list, max_length=MAX_RECENT_QUERIES
+    )
 
     @field_validator("schema_version")
     @classmethod
@@ -77,13 +115,11 @@ class UserPreferences(BaseModel):
 
     @field_validator("recent_suppliers", "recent_queries")
     @classmethod
-    def _validate_list_items(cls, values: list[str]) -> list[str]:
-        for index, value in enumerate(values):
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"第 {index + 1} 项必须是非空字符串")
-            if len(value) > 500:
-                raise ValueError(f"第 {index + 1} 项超过 500 字符")
-        return values
+    def _unique_values(cls, items: list[RecentMemoryItem]):
+        values = [item.value for item in items]
+        if len(values) != len(set(values)):
+            raise ValueError("recent 记忆存在重复 value")
+        return items
 
 
 class PreferenceSchemaError(ValueError):
@@ -151,6 +187,36 @@ def _validation_error(exc: ValidationError) -> PreferenceSchemaError:
     return PreferenceSchemaError(reason, field_errors)
 
 
+def _migrate_recent(value: Any, *, field_name: str, now: datetime) -> Any:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise PreferenceSchemaError(
+            "invalid_structure", {field_name: "必须是列表"}
+        )
+    migrated: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            if not item.strip():
+                raise PreferenceSchemaError(
+                    "invalid_structure", {f"{field_name}[{index}]": "不能为空"}
+                )
+            migrated.append(
+                {
+                    "value": item,
+                    "created_at": now,
+                    "last_seen_at": now,
+                }
+            )
+        elif isinstance(item, dict):
+            migrated.append(item)
+        else:
+            raise PreferenceSchemaError(
+                "invalid_structure", {f"{field_name}[{index}]": "非法条目"}
+            )
+    return migrated
+
+
 def load_preferences(text: str | None) -> LoadedPreferences:
     """解析偏好文件；任何异常都以 PreferenceSchemaError 失败关闭。"""
     if text is None or not text.strip():
@@ -168,9 +234,21 @@ def load_preferences(text: str | None) -> LoadedPreferences:
 
     data: dict[str, Any] = dict(raw)
     migrated = False
+    now = _utc_now()
+
     if "schema_version" not in data:
         data["schema_version"] = CURRENT_SCHEMA_VERSION
         data["revision"] = 0
+        data["recent_suppliers"] = _migrate_recent(
+            data.get("recent_suppliers"),
+            field_name="recent_suppliers",
+            now=now,
+        )
+        data["recent_queries"] = _migrate_recent(
+            data.get("recent_queries"),
+            field_name="recent_queries",
+            now=now,
+        )
         migrated = True
     else:
         version = data["schema_version"]
@@ -187,9 +265,20 @@ def load_preferences(text: str | None) -> LoadedPreferences:
             raise PreferenceSchemaError(
                 "invalid_schema_version", {"schema_version": "版本号不能为负数"}
             )
-        if version in (0, 1):
+        if version < CURRENT_SCHEMA_VERSION:
+            if version in (0, 1):
+                data["revision"] = 0
             data["schema_version"] = CURRENT_SCHEMA_VERSION
-            data["revision"] = 0
+            data["recent_suppliers"] = _migrate_recent(
+                data.get("recent_suppliers"),
+                field_name="recent_suppliers",
+                now=now,
+            )
+            data["recent_queries"] = _migrate_recent(
+                data.get("recent_queries"),
+                field_name="recent_queries",
+                now=now,
+            )
             migrated = True
 
     try:
@@ -211,34 +300,111 @@ def dump_preferences(preferences: UserPreferences) -> str:
     )
 
 
+def _merge_recent(
+    existing: list[RecentMemoryItem],
+    incoming: list[str],
+    *,
+    now: datetime,
+    limit: int,
+) -> list[RecentMemoryItem]:
+    normalized: list[str] = []
+    for value in incoming:
+        text = str(value).strip()[:500]
+        if text and text not in normalized:
+            normalized.append(text)
+
+    by_value = {item.value: item for item in existing}
+    result: list[RecentMemoryItem] = []
+    for value in normalized:
+        current = by_value.get(value)
+        if current is None:
+            result.append(
+                RecentMemoryItem(
+                    value=value,
+                    created_at=now,
+                    last_seen_at=now,
+                )
+            )
+        else:
+            result.append(
+                current.model_copy(update={"last_seen_at": now})
+            )
+
+    for item in existing:
+        if item.value not in normalized:
+            result.append(item)
+    return result[:limit]
+
+
 def merge_auto_fields(
     preferences: UserPreferences,
     suppliers: list[str],
     query: str,
 ) -> UserPreferences:
-    """只更新 recent_suppliers / recent_queries，显式偏好保持原值。"""
-    incoming_suppliers: list[str] = []
-    for supplier in suppliers:
-        value = str(supplier).strip()[:500]
-        if value and value not in incoming_suppliers:
-            incoming_suppliers.append(value)
-
-    merged_suppliers = list(incoming_suppliers)
-    for supplier in preferences.recent_suppliers:
-        if supplier not in merged_suppliers:
-            merged_suppliers.append(supplier)
-    merged_suppliers = merged_suppliers[:10]
-
-    incoming_query = str(query or "").strip()[:500]
-    merged_queries: list[str] = []
-    if incoming_query:
-        merged_queries.append(incoming_query)
-    for existing in preferences.recent_queries:
-        if existing not in merged_queries:
-            merged_queries.append(existing)
-    merged_queries = merged_queries[:5]
+    """只更新 recent 条目；显式偏好与 revision 保持。"""
+    now = _utc_now()
+    suppliers_merged = _merge_recent(
+        preferences.recent_suppliers,
+        suppliers,
+        now=now,
+        limit=MAX_RECENT_SUPPLIERS,
+    )
+    query_values = [query] if str(query or "").strip() else []
+    queries_merged = _merge_recent(
+        preferences.recent_queries,
+        query_values,
+        now=now,
+        limit=MAX_RECENT_QUERIES,
+    )
 
     payload = preferences.model_dump(mode="json")
-    payload["recent_suppliers"] = merged_suppliers
-    payload["recent_queries"] = merged_queries
+    payload["recent_suppliers"] = [
+        item.model_dump(mode="json") for item in suppliers_merged
+    ]
+    payload["recent_queries"] = [
+        item.model_dump(mode="json") for item in queries_merged
+    ]
     return UserPreferences.model_validate(payload)
+
+
+def prune_recent(
+    preferences: UserPreferences,
+    *,
+    now: datetime | None = None,
+) -> UserPreferences:
+    """按 last_seen_at 淘汰过期 recent 项；不改变显式字段/revision。"""
+    now = now or _utc_now()
+    supplier_cutoff = now - timedelta(days=RECENT_SUPPLIER_TTL_DAYS)
+    query_cutoff = now - timedelta(days=RECENT_QUERY_TTL_DAYS)
+    payload = preferences.model_dump(mode="json")
+    payload["recent_suppliers"] = [
+        item.model_dump(mode="json")
+        for item in preferences.recent_suppliers
+        if item.last_seen_at >= supplier_cutoff
+    ]
+    payload["recent_queries"] = [
+        item.model_dump(mode="json")
+        for item in preferences.recent_queries
+        if item.last_seen_at >= query_cutoff
+    ]
+    return UserPreferences.model_validate(payload)
+
+
+def recent_values(items: list[RecentMemoryItem]) -> list[str]:
+    return [item.value for item in items]
+
+
+def merge_recent_values(
+    existing: list[RecentMemoryItem],
+    values: list[str],
+    *,
+    limit: int,
+    now: datetime | None = None,
+) -> list[RecentMemoryItem]:
+    """合并新值并刷新 last_seen；供服务层显式合并使用。"""
+    return _merge_recent(
+        existing,
+        values,
+        now=now or _utc_now(),
+        limit=limit,
+    )

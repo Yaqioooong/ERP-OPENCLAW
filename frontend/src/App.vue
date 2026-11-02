@@ -42,6 +42,7 @@
         @logout-all="handleLogoutAll"
         @change-password="showPassword = true"
         @open-admin="showAdmin = true"
+        @open-memory="showMemory = true"
       />
 
       <ChatArea
@@ -98,6 +99,8 @@
         :current-user="currentUser"
         @close="showAdmin = false"
       />
+
+      <MemoryPanel v-if="showMemory" @close="showMemory = false" />
     </main>
   </div>
   <div v-else class="auth-loading">
@@ -120,6 +123,7 @@ import ToastHost from './components/ToastHost.vue'
 import LoginView from './components/LoginView.vue'
 import ChangePassword from './components/ChangePassword.vue'
 import AdminPanel from './components/AdminPanel.vue'
+import MemoryPanel from './components/MemoryPanel.vue'
 import { streamChat, resumeChat } from './api/chat.js'
 import { getSessions, getMessages, deleteSession } from './api/history.js'
 import { getMe, logout as logoutRequest, logoutAll as logoutAllRequest } from './api/auth.js'
@@ -148,6 +152,7 @@ const authState = ref('loading')
 const currentUser = ref(null)
 const showPassword = ref(false)
 const showAdmin = ref(false)
+const showMemory = ref(false)
 const sidebarOpen = ref(false)
 const draft = ref('')
 const resumeError = ref('')
@@ -305,6 +310,7 @@ function resetToAnonymous() {
   showProcurement.value = false
   showAdmin.value = false
   showPassword.value = false
+  showMemory.value = false
   currentUser.value = null
   authState.value = 'anonymous'
 }
