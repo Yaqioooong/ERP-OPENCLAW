@@ -17,6 +17,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping
@@ -139,7 +140,12 @@ def build_default_sections(
     preferences = (
         f"用户ID：{user_id}\n"
         f"用户名：{username}\n"
-        f"偏好文件：{preferences_file}（工作前用 read_file 读取；读不到则按默认：表格 + CNY）"
+        f"偏好文件：{preferences_file}"
+        + (
+            "（仅在任务涉及输出格式/语言时读取）"
+            if subagent_type == "general-purpose"
+            else "（工作前用 read_file 读取；读不到则按默认：表格 + CNY）"
+        )
     )
 
     if subagent_type == "procurement-order":
@@ -147,6 +153,12 @@ def build_default_sections(
             "1. 只回传本次操作结果，不返回原始接口响应；\n"
             "2. 必须包含【操作结果】【变更字段】【备注】三段；\n"
             "3. 接口失败时如实写明错误码与原因，不要重试到超限。"
+        )
+    elif subagent_type == "general-purpose":
+        output = (
+            "1. 直接回传任务结果，不返回原始工具输出；\n"
+            "2. 如生成文件，给出文件路径；\n"
+            "3. 数据不足或无法完成时明说，不要编造。"
         )
     else:
         output = (
@@ -173,6 +185,97 @@ def patch_brief(description: str, defaults: Mapping[str, str]) -> str:
     return f"{base}\n\n" + "\n\n".join(additions)
 
 
+#: 下行简报契约版本；结构变化时递增，便于后续兼容。
+BRIEF_VERSION = "1.0"
+
+CODE_BRIEF_INVALID = "DELEGATION_BRIEF_INVALID"
+CODE_AGENT_UNKNOWN = "DELEGATION_AGENT_UNKNOWN"
+CODE_EMPTY_RESULT = "DELEGATION_EMPTY_RESULT"
+CODE_REPORT_INCOMPLETE = "DELEGATION_REPORT_INCOMPLETE"
+CODE_TIMEOUT = "DELEGATION_TIMEOUT"
+CODE_RATE_LIMITED = "DELEGATION_RATE_LIMITED"
+CODE_TRANSPORT_ERROR = "DELEGATION_TRANSPORT_ERROR"
+CODE_RECURSION_LIMIT = "DELEGATION_RECURSION_LIMIT"
+CODE_FAILED = "DELEGATION_FAILED"
+
+
+class BriefValidationError(ValueError):
+    """委派简报缺少不可由系统补齐的必需段落。"""
+
+    def __init__(
+        self,
+        missing: Iterable[str],
+        *,
+        present: Iterable[str] = (),
+    ) -> None:
+        self.code = CODE_BRIEF_INVALID
+        self.missing = tuple(missing)
+        self.present = tuple(present)
+        super().__init__(
+            "委派简报缺少必需段落：" + "、".join(self.missing)
+        )
+
+
+def _json_brief_to_text(description: str) -> str:
+    """把前向兼容的 JSON 简报转成规范四段文本；无法识别时原样返回。"""
+    text = (description or "").strip()
+    if not text.startswith("{"):
+        return description
+    try:
+        payload = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return description
+    if not isinstance(payload, dict):
+        return description
+
+    mapping = (
+        ("goal", BRIEF_GOAL),
+        ("request", BRIEF_REQUEST),
+        ("preferences", BRIEF_PREFERENCES),
+        ("output", BRIEF_OUTPUT),
+        ("output_contract", BRIEF_OUTPUT),
+    )
+    parts: list[str] = []
+    for key, header in mapping:
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        if not isinstance(value, str):
+            value = json.dumps(value, ensure_ascii=False, default=str)
+        parts.append(f"{header}\n{value}")
+    if not parts:
+        return description
+    return "\n\n".join(parts)
+
+
+def prepare_brief(
+    description: str | None,
+    subagent_type: str,
+    *,
+    context: Any = None,
+    required_sections: Iterable[str] = BRIEF_REQUIRED_SECTIONS,
+) -> str:
+    """校验并补齐委派简报，返回子 Agent 实际收到的规范文本。
+
+    缺【任务目标】/【需求正文】时抛 ``BriefValidationError``，由调用方转成
+    可修复的 tool error；缺【用户偏好】/【输出要求】时用运行时上下文补齐。
+    """
+    normalized = _json_brief_to_text(description or "")
+    check = validate_brief(normalized)
+    blocking = tuple(
+        section
+        for section in required_sections
+        if section in check.blocking
+    )
+    if blocking:
+        raise BriefValidationError(blocking, present=check.present)
+    return patch_brief(
+        normalized,
+        build_default_sections(subagent_type, context),
+    )
+
+
+
 # ---------------------------------------------------------------------------
 # 上行：子 Agent 回传
 # ---------------------------------------------------------------------------
@@ -184,6 +287,7 @@ REPORT_SUGGESTIONS = "【采购建议】"
 REPORT_RESULT = "【操作结果】"
 REPORT_CHANGES = "【变更字段】"
 REPORT_NOTE = "【备注】"
+REPORT_TEXT = "【文本结果】"
 
 #: 子 Agent 常见同义头，解析时归一，不要求模型逐字背诵。
 REPORT_ALIASES: dict[str, str] = {
@@ -275,9 +379,12 @@ def parse_report(text: str | None, agent: str | None = None) -> ReportEnvelope:
         found = _PATH_RE.search(raw)
         report_path = found.group(1) if found else None
 
-    # 契约未声明必需段落的子 Agent：只要解析出段落且原文非空即视为结构化。
+    # 契约未声明必需段落的子 Agent（如 general-purpose）：纯文本也是合法结果，
+    # 包成【文本结果】而不是判降级，避免逼迫通用子 Agent 套采购报告模板。
     if not contract.required:
-        missing = () if fields and raw.strip() else ("（未识别到任何规范段落）",)
+        if raw.strip() and not fields:
+            fields = {REPORT_TEXT: raw.strip()}
+        missing = () if raw.strip() else ("（空返回）",)
 
     status = STATUS_STRUCTURED if not missing else STATUS_DEGRADED
     return ReportEnvelope(
@@ -328,22 +435,329 @@ def render_envelope(envelope: ReportEnvelope) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# 上行：结构化结果信封
+# ---------------------------------------------------------------------------
+
+RESULT_VERSION = "1.0"
+RESULT_OK = "ok"
+RESULT_DEGRADED = "degraded"
+RESULT_ERROR = "error"
+RESULT_TIMEOUT = "timeout"
+
+DEFAULT_RAW_TEXT_LIMIT = 2000
+
+
+def _single_line(text: str, *, limit: int = 500) -> str:
+    value = " ".join(str(text or "").split())
+    return value if len(value) <= limit else f"{value[:limit]}…"
+
+
+def _truncate(text: str, limit: int) -> str:
+    value = text or ""
+    if limit <= 0 or len(value) <= limit:
+        return value
+    return f"{value[:limit]}\n…（已截断，原文共 {len(value)} 字符）"
+
+
+def _infer_outcome(agent: str, fields: Mapping[str, str]) -> str | None:
+    if agent != "procurement-order":
+        return None
+    result = str(fields.get(REPORT_RESULT) or "").strip()
+    if not result:
+        return None
+    if result.startswith("失败") or "失败" in result[:20]:
+        return "failure"
+    if result.startswith("成功") or "成功" in result[:20]:
+        return "success"
+    return None
+
+
+@dataclass(frozen=True)
+class DelegationResult:
+    """父 Agent 侧消费的版本化回传信封。"""
+
+    agent: str
+    status: str
+    code: str | None = None
+    message: str = ""
+    retryable: bool = False
+    side_effect_unknown: bool = False
+    missing: tuple[str, ...] = ()
+    fields: dict[str, str] = field(default_factory=dict)
+    report_path: str | None = None
+    raw_text: str = ""
+    duration_ms: int | None = None
+    outcome: str | None = None
+    version: str = RESULT_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "contract_version": self.version,
+            "status": self.status,
+            "agent": self.agent,
+            "outcome": self.outcome,
+            "code": self.code,
+            "message": _single_line(self.message, limit=500),
+            "retryable": self.retryable,
+            "side_effect_unknown": self.side_effect_unknown,
+            "missing": list(self.missing),
+            "report_path": self.report_path,
+            "fields": dict(self.fields),
+            "raw_text": self.raw_text or None,
+            "duration_ms": self.duration_ms,
+        }
+
+
+def build_result_from_text(
+    text: str | None,
+    agent: str,
+    *,
+    duration_ms: int | None = None,
+    raw_text_limit: int = DEFAULT_RAW_TEXT_LIMIT,
+) -> DelegationResult:
+    """把子 Agent 文本转成 ok/degraded/error 信封。"""
+    raw = text or ""
+    if not raw.strip():
+        return DelegationResult(
+            agent=agent,
+            status=RESULT_ERROR,
+            code=CODE_EMPTY_RESULT,
+            message="子 Agent 没有返回任何内容；可以重试，或换一种更明确的任务描述。",
+            retryable=True,
+            duration_ms=duration_ms,
+        )
+
+    report = parse_report(raw, agent)
+    outcome = _infer_outcome(agent, report.fields)
+
+    if report.ok:
+        return DelegationResult(
+            agent=agent,
+            status=RESULT_OK,
+            outcome=outcome,
+            fields=dict(report.fields),
+            report_path=report.report_path,
+            duration_ms=duration_ms,
+        )
+
+    return DelegationResult(
+        agent=agent,
+        status=RESULT_DEGRADED,
+        code=CODE_REPORT_INCOMPLETE,
+        message=(
+            "子 Agent 未按回传契约返回，以下原文不保证结构完整；"
+            "优先读取文件产物，不要直接把原文当结论。"
+        ),
+        retryable=True,
+        missing=tuple(report.missing),
+        fields=dict(report.fields),
+        report_path=report.report_path,
+        raw_text=_truncate(raw.strip(), raw_text_limit),
+        duration_ms=duration_ms,
+        outcome=outcome,
+    )
+
+
+def build_error_result(
+    *,
+    agent: str,
+    code: str,
+    message: str,
+    retryable: bool = False,
+    side_effect_unknown: bool = False,
+    missing: Iterable[str] = (),
+    raw_text: str = "",
+    duration_ms: int | None = None,
+    raw_text_limit: int = DEFAULT_RAW_TEXT_LIMIT,
+) -> DelegationResult:
+    return DelegationResult(
+        agent=agent,
+        status=RESULT_ERROR,
+        code=code,
+        message=message,
+        retryable=retryable,
+        side_effect_unknown=side_effect_unknown,
+        missing=tuple(missing),
+        raw_text=_truncate(raw_text.strip(), raw_text_limit),
+        duration_ms=duration_ms,
+    )
+
+
+def build_timeout_result(
+    *,
+    agent: str,
+    timeout_seconds: float,
+    duration_ms: int | None = None,
+) -> DelegationResult:
+    order_write = agent == "procurement-order"
+    if order_write:
+        message = (
+            f"子 Agent 超过 {timeout_seconds:g}s 未返回。订单写操作可能已执行，"
+            "结果未知；不要自动重试，先查询订单确认实际状态。"
+        )
+    else:
+        message = (
+            f"子 Agent 超过 {timeout_seconds:g}s 未返回；可以重试，"
+            "或把任务拆小后再委派。"
+        )
+    return DelegationResult(
+        agent=agent,
+        status=RESULT_TIMEOUT,
+        code=CODE_TIMEOUT,
+        message=message,
+        retryable=not order_write,
+        side_effect_unknown=order_write,
+        duration_ms=duration_ms,
+    )
+
+
+def classify_exception(
+    exc: BaseException,
+    *,
+    agent: str,
+) -> tuple[str, bool, bool]:
+    """返回 (code, retryable, side_effect_unknown)。
+
+    只做保守分类：无法判断是否可重试时按不可重试处理，避免父模型反复
+    重派写操作。
+    """
+    name = type(exc).__name__.casefold()
+    text = str(exc).casefold()
+    code = CODE_FAILED
+    retryable = False
+
+    if "timeout" in name or "timed out" in text or "timeouterror" in name:
+        code = CODE_TIMEOUT
+        retryable = True
+    elif "ratelimit" in name or "rate_limit" in name or "429" in text:
+        code = CODE_RATE_LIMITED
+        retryable = True
+    elif "recursion" in name:
+        code = CODE_RECURSION_LIMIT
+        retryable = False
+    elif any(
+        token in name
+        for token in ("connection", "transport", "connecterror", "network")
+    ) or "connection" in text:
+        code = CODE_TRANSPORT_ERROR
+        retryable = True
+
+    # 订单子 Agent 可能已经产生远端副作用：一律不自动重试，交给人工/查询确认。
+    side_effect_unknown = agent == "procurement-order"
+    if side_effect_unknown:
+        retryable = False
+    return code, retryable, side_effect_unknown
+
+
+def build_exception_result(
+    exc: BaseException,
+    *,
+    agent: str,
+    duration_ms: int | None = None,
+) -> DelegationResult:
+    code, retryable, side_effect_unknown = classify_exception(exc, agent=agent)
+    message = (
+        f"子 Agent 调用失败（{type(exc).__name__}）。"
+        if not side_effect_unknown
+        else (
+            f"子 Agent 调用失败（{type(exc).__name__}），订单可能已被修改；"
+            "不要自动重试，先查询订单确认状态。"
+        )
+    )
+    return build_error_result(
+        agent=agent,
+        code=code,
+        message=message,
+        retryable=retryable,
+        side_effect_unknown=side_effect_unknown,
+        duration_ms=duration_ms,
+    )
+
+
+def render_result(result: DelegationResult) -> str:
+    """渲染给父 Agent：状态头 + JSON 信封 + 必要的人读提示。"""
+    header = (
+        f"【委派结果】status={result.status} agent={result.agent} "
+        f"retryable={str(result.retryable).lower()} "
+        f"duration_ms={result.duration_ms or 0}"
+    )
+    payload = json.dumps(
+        result.to_dict(), ensure_ascii=False, indent=2, default=str
+    )
+    parts = [header, "```json", payload, "```"]
+
+    if result.status == RESULT_DEGRADED:
+        parts.append(
+            "子 Agent 未按回传契约返回。请先 read_file 读取 report_path "
+            "指向的文件产物，再向用户汇报；不要把 raw_text 直接当结论。"
+        )
+    elif result.status == RESULT_TIMEOUT and result.side_effect_unknown:
+        parts.append(
+            "订单写操作结果未知：不要自动重试；先查询订单实际状态，"
+            "确认未执行后再决定是否重新发起。"
+        )
+    elif result.status == RESULT_TIMEOUT:
+        parts.append(
+            "子 Agent 超时。可以重试，或把任务拆小后重新委派。"
+        )
+    elif result.status == RESULT_ERROR:
+        if result.side_effect_unknown:
+            parts.append(
+                "订单可能已被修改：不要自动重试；先查询订单实际状态。"
+            )
+        elif result.retryable:
+            parts.append(
+                "该失败标记为可重试；补齐信息或调整任务后可重新调用 task。"
+            )
+        else:
+            parts.append(
+                "该失败按不可重试处理；请改派、拆任务或向用户说明限制。"
+            )
+    return "\n".join(parts)
+
+
+
 __all__ = [
     "BRIEF_SECTIONS",
     "BRIEF_REQUIRED_SECTIONS",
     "BRIEF_DEFAULTABLE_SECTIONS",
+    "BRIEF_VERSION",
     "BriefCheck",
+    "BriefValidationError",
     "ReportContract",
     "ReportEnvelope",
     "REPORT_CONTRACTS",
     "STATUS_DEGRADED",
     "STATUS_STRUCTURED",
+    "RESULT_VERSION",
+    "RESULT_OK",
+    "RESULT_DEGRADED",
+    "RESULT_ERROR",
+    "RESULT_TIMEOUT",
+    "DelegationResult",
+    "CODE_BRIEF_INVALID",
+    "CODE_AGENT_UNKNOWN",
+    "CODE_EMPTY_RESULT",
+    "CODE_REPORT_INCOMPLETE",
+    "CODE_TIMEOUT",
+    "CODE_RATE_LIMITED",
+    "CODE_TRANSPORT_ERROR",
+    "CODE_RECURSION_LIMIT",
+    "CODE_FAILED",
     "build_default_sections",
+    "build_error_result",
+    "build_exception_result",
+    "build_result_from_text",
+    "build_timeout_result",
+    "classify_exception",
     "contract_for",
     "parse_report",
     "patch_brief",
+    "prepare_brief",
     "render_brief_repair_hint",
     "render_envelope",
+    "render_result",
     "section_body",
     "split_sections",
     "validate_brief",

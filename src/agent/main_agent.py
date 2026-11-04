@@ -57,6 +57,7 @@ from agent.memory.preference_lock import RedisPreferenceLock
 from agent.memory.preference_service import PreferenceMemoryService
 from agent.memory.user_memory_backend import UserMemoryBackend
 from agent.middlewares.context_injection import ContextInjectionMiddleware
+from agent.middlewares.delegation_contract import DelegationContractMiddleware
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skills_sync import SkillsSyncMiddleware
 from agent.middlewares.tools_summarization import build_summarization_middleware
@@ -233,9 +234,23 @@ async def create_main_agent(
 
     # --- Phase 8: 主 Agent 中间件栈 ---
     logger.info("构建主 Agent 中间件栈...")
+    known_subagents = tuple(
+        sorted(
+            {
+                str(config.get("name"))
+                for config in raw_configs
+                if config.get("name")
+            }
+            | {"general-purpose"}
+        )
+    )
     main_middleware = [
         TodoListMiddleware(),
         ContextInjectionMiddleware(),
+        # 委派契约：下行校验/补齐、上行结构化、异常与超时兜底。
+        DelegationContractMiddleware(
+            known_subagents=known_subagents or None,
+        ),
         SkillsSyncMiddleware(sandbox_backend),
         UserSkillsRestoreMiddleware(sandbox_backend, SKILLS_STORE_NAMESPACE),
         build_summarization_middleware(backend, SUMMARY_MODEL),

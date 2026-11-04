@@ -291,14 +291,20 @@ result = await graph.ainvoke(
 
 | 方向 | 环节 | 机制 | 失败处理 |
 | --- | --- | --- | --- |
-| 下行 | `DelegationContractMiddleware._prepare` | `validate_brief` 检查四段 | 缺【任务目标】/【需求正文】→ 不派发，返回可修复 tool error |
-| 下行 | 同上 | `patch_brief` + `build_default_sections` | 缺【用户偏好】/【输出要求】→ 用 `context` 身份与默认形态补齐 |
-| 上行 | `parse_report` | 按段落解析，支持常见同义头 | 缺段 → `status=degraded`，提示先 `read_file` 读文件产物 |
-| 上行 | `render_envelope` | 渲染规范信封给主 Agent | 原文仍完整保留在信封内，不丢信息 |
+| 下行 | `DelegationContractMiddleware._prepare` | `prepare_brief` 解析四段（兼容 JSON 简报），检查必需段 | 缺【任务目标】/【需求正文】→ 不派发，返回可修复 tool error |
+| 下行 | 同上 | 补齐可选项 + 已知子 Agent 校验 | 缺【用户偏好】/【输出要求】→ 用 `context` 身份与默认形态补齐；未知类型 → 不派发并列出可用类型 |
+| 上行 | `_finalize` | 兼容 `ToolMessage` 与当前框架的 `Command` 返回，解析为版本化 JSON 信封 | 缺段 → `status=degraded`，提示先 `read_file` 读文件产物；空返回 → `status=error` |
+| 上行 | `render_result` | 状态头 + JSON 信封 + 人读提示 | 子 Agent 异常/超时不再冒泡；订单写类标记 `side_effect_unknown=true`、不自动重试 |
 
 关键取舍：**文件是可靠产物，文本只是投影**。子 Agent 先把报告写进
 `/analysis/`，回传只是索引；解析失败时主 Agent 回到文件，而不是相信残缺文本。
-契约代码在 `src/agent/subagents/contract.py`，回归见 `tests/test_delegation_contract.py`
+契约层不自动重试任何子 Agent 调用；`retryable` 只作为主 Agent 的决策输入。
+异步委派默认超时：分析 `600s`、订单 `120s`（可配置）。订单写操作超时/异常时
+父 Agent 必须提示“先查询订单”，避免重复修改。
+
+契约代码在 `src/agent/subagents/contract.py` 与
+`src/agent/middlewares/delegation_contract.py`，回归见
+`tests/test_delegation_contract.py`、`tests/test_delegation_runtime.py`
 （规格 `specs/010-delegation-contract`）。
 
 ### 用户偏好持久化

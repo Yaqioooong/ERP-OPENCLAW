@@ -7,21 +7,33 @@
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from langgraph.types import Command
 
 from agent.middlewares.delegation_contract import DelegationContractMiddleware
 from agent.subagents.contract import (
     BRIEF_SECTIONS,
+    CODE_AGENT_UNKNOWN,
+    CODE_EMPTY_RESULT,
+    CODE_TIMEOUT,
+    RESULT_DEGRADED,
+    RESULT_ERROR,
+    RESULT_OK,
+    RESULT_TIMEOUT,
     STATUS_DEGRADED,
     STATUS_STRUCTURED,
     build_default_sections,
+    build_result_from_text,
     parse_report,
     patch_brief,
+    prepare_brief,
     validate_brief,
 )
 
@@ -73,6 +85,13 @@ FULL_BRIEF = """【任务目标】
 1. 报告写到 /analysis/
 2. 摘要 300 字
 """
+
+
+def _envelope(content: str) -> dict:
+    """从「状态头 + ```json```」内容里取出结构化信封。"""
+    assert "```json" in content, content
+    block = content.split("```json", 1)[1].split("```", 1)[0]
+    return json.loads(block)
 
 
 # ---------------------------------------------------------------- 下行契约
@@ -167,9 +186,172 @@ def test_structured_report_is_normalized():
     )
 
     assert result.status == "success"
-    assert "status=structured" in result.content
-    assert "agent=procurement-analyst" in result.content
-    assert "/analysis/report_1.md" in result.content
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_OK
+    assert envelope["agent"] == "procurement-analyst"
+    assert envelope["report_path"] == "/analysis/report_1.md"
+    assert envelope["fields"]["【分析结论】"].startswith("1. A")
+    assert envelope["code"] is None
+
+
+def test_command_result_is_structured():
+    """当前 deepagents 的 task 返回 Command，不是直接的 ToolMessage。"""
+    raw = "【报告路径】/analysis/r.md\n【分析内容摘要】s\n【分析结论】c\n【采购建议】p"
+    middleware = DelegationContractMiddleware(logger=_Logger())
+
+    def handler(request):
+        return Command(
+            update={
+                "messages": [ToolMessage(content=raw, tool_call_id="call-1")],
+                "files": {"report.md": "x"},
+            }
+        )
+
+    result = middleware.wrap_tool_call(_request(FULL_BRIEF), handler)
+
+    assert isinstance(result, Command)
+    assert result.update["files"] == {"report.md": "x"}  # 其他 state update 不丢
+    message = result.update["messages"][0]
+    envelope = _envelope(message.content)
+    assert envelope["status"] == RESULT_OK
+    assert envelope["agent"] == "procurement-analyst"
+
+
+def test_unknown_subagent_is_rejected_before_dispatch():
+    middleware = DelegationContractMiddleware(
+        known_subagents=("procurement-analyst", "procurement-order"),
+        logger=_Logger(),
+    )
+    called = []
+
+    def handler(request):
+        called.append(request)
+        return ToolMessage(content="ok", tool_call_id="call-1")
+
+    result = middleware.wrap_tool_call(
+        _request(FULL_BRIEF, subagent_type="procurement-unknown"), handler
+    )
+
+    assert called == []
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_ERROR
+    assert envelope["code"] == CODE_AGENT_UNKNOWN
+    assert "procurement-analyst" in envelope["message"]
+
+
+def test_empty_subagent_result_is_error_not_success():
+    middleware = DelegationContractMiddleware(logger=_Logger())
+    result = middleware.wrap_tool_call(
+        _request(FULL_BRIEF),
+        lambda r: ToolMessage(content="", tool_call_id="call-1"),
+    )
+
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_ERROR
+    assert envelope["code"] == CODE_EMPTY_RESULT
+    assert envelope["retryable"] is True
+    assert result.status == "error"
+
+
+def test_subagent_exception_is_wrapped_without_crashing_parent():
+    middleware = DelegationContractMiddleware(logger=_Logger())
+
+    def boom(request):
+        raise RuntimeError("subagent exploded")
+
+    result = middleware.wrap_tool_call(_request(FULL_BRIEF), boom)
+
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_ERROR
+    assert result.status == "error"
+    assert envelope["retryable"] is False
+    assert "subagent exploded" not in result.content  # 不回传原始异常文本
+
+
+def test_order_timeout_marks_side_effect_unknown():
+    middleware = DelegationContractMiddleware(
+        known_subagents=("procurement-order",),
+        timeout_by_agent={"procurement-order": 0.01},
+        logger=_Logger(),
+    )
+
+    async def slow(request):
+        await asyncio.sleep(0.2)
+        return ToolMessage(content="too late", tool_call_id="call-1")
+
+    result = asyncio.run(
+        middleware.awrap_tool_call(
+            _request(FULL_BRIEF, subagent_type="procurement-order"),
+            slow,
+        )
+    )
+
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_TIMEOUT
+    assert envelope["code"] == CODE_TIMEOUT
+    assert envelope["retryable"] is False
+    assert envelope["side_effect_unknown"] is True
+    assert result.status == "error"
+
+
+def test_analyst_timeout_is_retryable():
+    middleware = DelegationContractMiddleware(
+        known_subagents=("procurement-analyst",),
+        timeout_by_agent={"procurement-analyst": 0.01},
+        logger=_Logger(),
+    )
+
+    async def slow(request):
+        await asyncio.sleep(0.2)
+
+    result = asyncio.run(
+        middleware.awrap_tool_call(_request(FULL_BRIEF), slow)
+    )
+
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_TIMEOUT
+    assert envelope["retryable"] is True
+    assert envelope["side_effect_unknown"] is False
+
+
+def test_cancelled_error_is_not_wrapped():
+    middleware = DelegationContractMiddleware(logger=_Logger())
+
+    async def cancelled(request):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(middleware.awrap_tool_call(_request(FULL_BRIEF), cancelled))
+
+
+def test_prepare_brief_accepts_json_and_renders_sections():
+    description = json.dumps(
+        {"goal": "比价", "request": "火花塞 U27ETR"},
+        ensure_ascii=False,
+    )
+    patched = prepare_brief(description, "procurement-analyst")
+
+    assert "【任务目标】" in patched
+    assert "【需求正文】" in patched
+    assert "【用户偏好】" in patched
+    assert "【输出要求】" in patched
+
+
+def test_order_business_failure_is_structured_outcome():
+    result = build_result_from_text(
+        "【操作结果】失败：库存不足\n【备注】未修改订单",
+        "procurement-order",
+    )
+    assert result.status == RESULT_OK
+    assert result.outcome == "failure"
+
+
+def test_generic_subagent_plain_text_is_ok():
+    """general-purpose 不需要套采购报告模板，纯文本也是合法结果。"""
+    result = build_result_from_text("已完成：脚本已输出结果", "general-purpose")
+    assert result.status == RESULT_OK
+    assert result.fields["【文本结果】"].startswith("已完成")
+    assert result.report_path is None
 
 
 def test_alias_headers_are_accepted():
@@ -188,10 +370,11 @@ def test_incomplete_report_degrades_and_points_to_file():
     )
 
     assert result.status == "success"          # 工具本身没失败
-    assert "status=degraded" in result.content  # 但回传被标记降级
-    assert "/analysis/report_9.md" in result.content
-    assert "先 read_file 读取该文件" in result.content
-    assert raw in result.content               # 原文保留，不丢信息
+    envelope = _envelope(result.content)
+    assert envelope["status"] == RESULT_DEGRADED
+    assert envelope["report_path"] == "/analysis/report_9.md"
+    assert envelope["raw_text"] == raw
+    assert "read_file" in result.content
     assert any("report_degraded" in msg for level, msg in logger.events
                if level == "warning")
 

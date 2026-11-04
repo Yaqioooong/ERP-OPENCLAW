@@ -147,10 +147,15 @@ web_search(query="用户的问题关键词")
   可修复的 tool error，按提示补齐后可立即重试；
 - `【用户偏好】`/`【输出要求】` 缺失 → 中间件用运行时 `context`（user_id、
   username、偏好文件路径）和该子 Agent 的固定输出形态自动补齐，不打断流程；
-- 子 Agent 回传缺段 → 中间件把结果标成 `status=degraded`，并显式提示“先
-  `read_file` 读文件产物，不要依赖残缺文本做结论”。
+- 未知子 Agent 类型 → 派发前拦下，返回可用类型列表；
+- 子 Agent 回传统一为 `status=ok|degraded|error|timeout` 的结构化信封：
+  - `degraded`：契约缺段，先 `read_file` 读 `report_path` 指向的文件产物，
+    不要依赖 `raw_text` 做结论；
+  - `error`/`timeout`：按信封里的 `retryable` 决定是否重试；
+  - 订单子 Agent 的 `side_effect_unknown=true` 表示写操作可能已执行，
+    必须先查询订单实际状态，禁止自动重试写操作。
 
-所以模板仍然要写全：中间件只保证**结构**存在，语义质量仍取决于你传了什么。
+所以模板仍然要写全：中间件只保证**结构与失败语义**存在，语义质量仍取决于你传了什么。
 
 ### 不委派的情况（主 Agent 自行处理）
 - 新建采购单/下单/走审批 → 调用 `start_procurement_task`（唯一创建入口，不委派）
