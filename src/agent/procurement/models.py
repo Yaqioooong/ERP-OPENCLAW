@@ -309,6 +309,7 @@ class TaskRecord(BaseModel):
 class TaskRunResult(BaseModel):
     task_id: str
     thread_id: str
+    conversation_id: str | None = None
     status: str
     current_node: str | None = None
     interrupt: dict[str, Any] | None = None

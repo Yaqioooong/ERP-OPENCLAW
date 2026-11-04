@@ -36,3 +36,12 @@ def test_claim_does_not_overwrite_existing_owner():
     with pytest.raises(ThreadAccessError):
         store.claim("thread-1", "u_b")
     assert store.get_owner("thread-1") == "u_a"
+
+
+def test_release_removes_owner_after_delete():
+    store = ThreadOwnershipStore(FakeRedis())
+    store.claim("thread-1", "u_a")
+    store.release("thread-1")
+    assert store.get_owner("thread-1") is None
+    with pytest.raises(ThreadAccessError):
+        store.verify("thread-1", "u_a")

@@ -139,6 +139,18 @@ class MemoryTaskRepository:
             if record.user_id == user_id
         ]
 
+    async def list_by_conversation(
+        self, *, user_id, conversation_id, limit=50, offset=0, **_kwargs
+    ):
+        matches = [
+            record
+            for record in self.records.values()
+            if record.user_id == user_id
+            and record.conversation_id == conversation_id
+        ]
+        matches.sort(key=lambda record: record.updated_at, reverse=True)
+        return matches[offset : offset + limit]
+
 
 class MemoryApprovalRepository:
     def __init__(self):

@@ -33,7 +33,7 @@ async function parseError(response, fallback) {
   return new Error(`${fallback}: ${response.status}`)
 }
 
-export async function createProcurementTask(request) {
+export async function createProcurementTask(request, conversationId = null) {
   const response = await fetch(`${API_BASE}/tasks`, {
     method: 'POST',
     credentials: 'same-origin',
@@ -41,10 +41,25 @@ export async function createProcurementTask(request) {
     body: JSON.stringify({
       message: '',
       request,
+      ...(conversationId ? { conversation_id: conversationId } : {}),
     }),
   })
   notifyIfUnauthorized(response)
   if (!response.ok) throw await parseError(response, '创建采购任务失败')
+  return response.json()
+}
+
+export async function listProcurementTasks(conversationId, { limit = 50, offset = 0 } = {}) {
+  const params = new URLSearchParams({
+    conversation_id: conversationId,
+    limit: String(limit),
+    offset: String(offset),
+  })
+  const response = await fetch(`${API_BASE}/tasks?${params.toString()}`, {
+    credentials: 'same-origin',
+  })
+  notifyIfUnauthorized(response)
+  if (!response.ok) throw await parseError(response, '查询采购任务列表失败')
   return response.json()
 }
 

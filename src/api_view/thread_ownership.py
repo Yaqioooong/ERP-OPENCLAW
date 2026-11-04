@@ -66,6 +66,15 @@ class ThreadOwnershipStore:
             raise ThreadOwnershipUnavailable("会话归属存储不可用") from exc
         return _as_text(owner) if owner is not None else None
 
+    def release(self, thread_id: str) -> None:
+        """删除会话后释放归属，避免已删除会话仍被判定为可用。"""
+        if not thread_id:
+            return
+        try:
+            self._client.delete(self._key(thread_id))
+        except Exception as exc:
+            raise ThreadOwnershipUnavailable("会话归属存储不可用") from exc
+
 
 _store: ThreadOwnershipStore | None = None
 

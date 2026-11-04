@@ -11,11 +11,15 @@ TZ = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 10, 22, 10, 0, tzinfo=TZ)
 
 
-def make_record(task_id: str = "TASK-1", user_id: str = "u1") -> TaskRecord:
+def make_record(
+    task_id: str = "TASK-1",
+    user_id: str = "u1",
+    conversation_id: str | None = "conv-1",
+) -> TaskRecord:
     return TaskRecord(
         task_id=task_id,
         thread_id=f"procurement:{task_id}",
-        conversation_id="conv-1",
+        conversation_id=conversation_id,
         user_id=user_id,
         status="running",
         created_at=NOW,
@@ -128,3 +132,44 @@ async def test_terminal_status_cannot_be_overwritten_by_stale_snapshot(db):
     assert record.status == "failed"
     assert record.last_error_code == "TASK_START_FAILED"
     assert record.last_error_message == "supplier id invalid"
+
+
+@pytest.mark.anyio
+async def test_list_by_conversation_is_scoped_and_paginated(db):
+    repo = PostgresTaskRepository(db)
+    await repo.setup()
+    await repo.create(make_record("TASK-1", "u1", "conv-a"))
+    await repo.create(
+        make_record("TASK-2", "u1", "conv-a").model_copy(
+            update={"updated_at": NOW + timedelta(minutes=1)}
+        )
+    )
+    await repo.create(make_record("TASK-3", "u1", "conv-b"))
+    await repo.create(make_record("TASK-4", "u2", "conv-a"))
+    await repo.create(make_record("TASK-5", "u1", None))
+
+    first_page = await repo.list_by_conversation(
+        user_id="u1",
+        conversation_id="conv-a",
+        limit=1,
+        offset=0,
+    )
+    assert [task.task_id for task in first_page] == ["TASK-2"]
+
+    second_page = await repo.list_by_conversation(
+        user_id="u1",
+        conversation_id="conv-a",
+        limit=1,
+        offset=1,
+    )
+    assert [task.task_id for task in second_page] == ["TASK-1"]
+
+    all_for_conversation = await repo.list_by_conversation(
+        user_id="u1",
+        conversation_id="conv-a",
+        limit=50,
+        offset=0,
+    )
+    assert [task.task_id for task in all_for_conversation] == ["TASK-2", "TASK-1"]
+    assert all(task.user_id == "u1" for task in all_for_conversation)
+    assert all(task.conversation_id == "conv-a" for task in all_for_conversation)

@@ -121,6 +121,43 @@ async def test_approval_interrupt_survives_restart(db):
 
 
 @pytest.mark.anyio
+async def test_task_origin_conversation_is_persisted_and_stable(db):
+    fake = FakeOrderExecutor(success=True)
+    deps = make_test_deps(fake, database=db)
+    runner, repository = await make_runner(deps, db, MemorySaver())
+
+    task_a = await runner.start(
+        raw_request="为华东仓补充 200 个活塞环组件",
+        user_id="u1",
+        username="张三",
+        conversation_id="conv-a",
+    )
+    task_b = await runner.start(
+        raw_request="为华东仓补充 100 个活塞环组件",
+        user_id="u1",
+        username="张三",
+        conversation_id="conv-b",
+    )
+
+    assert task_a.conversation_id == "conv-a"
+    assert task_b.conversation_id == "conv-b"
+    assert (await repository.get(task_a.task_id)).conversation_id == "conv-a"
+    assert (await repository.get(task_b.task_id)).conversation_id == "conv-b"
+
+    loaded = await runner.get(task_id=task_a.task_id, user_id="u1")
+    assert loaded.conversation_id == "conv-a"
+
+    resumed = await runner.resume(
+        task_id=task_a.task_id,
+        user_id="u1",
+        username="张三",
+        resume_data={"decision": "approve"},
+    )
+    assert resumed.conversation_id == "conv-a"
+    assert (await repository.get(task_a.task_id)).conversation_id == "conv-a"
+
+
+@pytest.mark.anyio
 async def test_tool_timeout_enters_retry_gate_and_only_reruns_analyze(db):
     fake = FakeOrderExecutor(success=True)
     parser = CountingParser()

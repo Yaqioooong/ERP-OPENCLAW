@@ -27,6 +27,10 @@ CREATE TABLE IF NOT EXISTS procurement_task (
 CREATE INDEX IF NOT EXISTS idx_procurement_task_user_status
     ON procurement_task(user_id, status);
 
+CREATE INDEX IF NOT EXISTS idx_procurement_task_conversation
+    ON procurement_task(user_id, conversation_id, updated_at DESC)
+    WHERE conversation_id IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_procurement_task_status
     ON procurement_task(status, updated_at);
 """
@@ -76,6 +80,15 @@ class TaskRepository(Protocol):
     async def list_recoverable(self, *, limit: int = 200) -> list[TaskRecord]: ...
 
     async def list_by_user(self, user_id: str, *, limit: int = 50) -> list[TaskRecord]: ...
+
+    async def list_by_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[TaskRecord]: ...
 
 
 class PostgresTaskRepository:
@@ -212,5 +225,30 @@ class PostgresTaskRepository:
                 """,
                 user_id,
                 limit,
+            )
+        return [TaskRecord(**dict(row)) for row in rows]
+
+    async def list_by_conversation(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[TaskRecord]:
+        await self.setup()
+        async with self._database.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM procurement_task
+                 WHERE user_id = $1
+                   AND conversation_id = $2
+                 ORDER BY updated_at DESC
+                 LIMIT $3 OFFSET $4
+                """,
+                user_id,
+                conversation_id,
+                limit,
+                offset,
             )
         return [TaskRecord(**dict(row)) for row in rows]

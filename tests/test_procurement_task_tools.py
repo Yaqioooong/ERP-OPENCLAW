@@ -128,13 +128,16 @@ async def test_start_tool_passes_recovered_model_to_runner(monkeypatch):
     class FakeRunner:
         def __init__(self):
             self.request = None
+            self.conversation_id = None
 
         async def start_background(self, **kwargs):
             self.request = kwargs["request"]
+            self.conversation_id = kwargs["conversation_id"]
             return {
                 "status": "running",
                 "task_id": "TASK-20261102-MODEL001",
                 "thread_id": "procurement:TASK-20261102-MODEL001",
+                "conversation_id": kwargs["conversation_id"],
                 "recoverable": True,
             }
 
@@ -149,6 +152,7 @@ async def test_start_tool_passes_recovered_model_to_runner(monkeypatch):
             user_id="u1",
             username="张三",
             roles=("requester",),
+            thread_id="conv-a",
         ),
         state={
             "messages": [
@@ -170,7 +174,45 @@ async def test_start_tool_passes_recovered_model_to_runner(monkeypatch):
 
     result = json.loads(raw)
     assert result["task_id"] == "TASK-20261102-MODEL001"
+    assert result["conversation_id"] == "conv-a"
+    assert runner.conversation_id == "conv-a"
     assert runner.request["items"][0]["part_name"] == "火花塞 U27ETR"
+
+
+@pytest.mark.anyio
+async def test_start_tool_requires_conversation_context(monkeypatch):
+    class FakeRunner:
+        def __init__(self):
+            self.called = False
+
+        async def start_background(self, **kwargs):
+            self.called = True
+            return {"status": "running", "task_id": "TASK-1"}
+
+    runner = FakeRunner()
+
+    async def get_runner():
+        return runner
+
+    monkeypatch.setattr(task_tools, "get_task_runner", get_runner)
+    runtime = SimpleNamespace(
+        context=ProcurementContext(
+            user_id="u1",
+            username="张三",
+            roles=("requester",),
+        ),
+        state={"messages": []},
+    )
+
+    raw = await task_tools.start_procurement_task(
+        {"items": [{"part_name": "火花塞", "quantity": 1}]},
+        runtime,
+    )
+
+    result = json.loads(raw)
+    assert result["error"] == "CONVERSATION_CONTEXT_MISSING"
+    assert result["status"] == "error"
+    assert runner.called is False
 
 
 def test_normalize_supplier_name_misplaced_in_id_field():

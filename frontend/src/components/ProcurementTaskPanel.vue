@@ -71,6 +71,27 @@
           </button>
         </div>
 
+        <div class="task-origin">
+          <MessageSquare :size="13" />
+          <span class="task-origin-label">来源对话</span>
+          <code v-if="task.conversation_id" class="task-origin-id">
+            {{ shortConversationId }}
+          </code>
+          <span v-else class="task-origin-muted">未关联对话</span>
+          <button
+            v-if="task.conversation_available"
+            type="button"
+            class="task-origin-link"
+            @click="openOriginConversation"
+          >
+            返回对话
+            <ArrowLeft :size="12" />
+          </button>
+          <span v-else-if="task.conversation_id" class="task-origin-muted">
+            不可访问
+          </span>
+        </div>
+
         <ol class="steps" aria-label="任务进度">
           <li
             v-for="(step, index) in steps"
@@ -380,12 +401,14 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useEventListener } from '@vueuse/core'
 import {
+  ArrowLeft,
   Check,
   CircleHelp,
   ClipboardList,
   Copy,
   FileText,
   ListChecks,
+  MessageSquare,
   RefreshCw,
   Sparkles,
   TriangleAlert,
@@ -397,7 +420,7 @@ import { useToast } from '../composables/useToast'
 import { useTaskStore } from '../composables/useTaskStore'
 import { formatClock, formatCurrency, formatDate } from '../utils/format'
 
-const emit = defineEmits(['close'])
+const emit = defineEmits(['close', 'open-conversation'])
 const { toast } = useToast()
 const store = useTaskStore()
 
@@ -531,6 +554,13 @@ const stepStates = computed(() => {
   })
 })
 
+const shortConversationId = computed(() => {
+  const conversationId = task.value?.conversation_id || ''
+  return conversationId.length > 12
+    ? `${conversationId.slice(0, 8)}…`
+    : conversationId
+})
+
 watch(
   approvalItems,
   (list) => {
@@ -563,6 +593,11 @@ function stepQty(index, delta) {
 useEventListener(window, 'keydown', (event) => {
   if (event.key === 'Escape') emit('close')
 })
+
+function openOriginConversation() {
+  if (!task.value?.conversation_available || !task.value?.conversation_id) return
+  emit('open-conversation', task.value.conversation_id)
+}
 
 async function copyTaskId() {
   try {
@@ -937,6 +972,46 @@ onMounted(async () => {
 
 .task-id:hover {
   color: var(--ink-2);
+}
+
+.task-origin {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: -6px 0 14px;
+  color: var(--ink-3);
+  font-size: 10.5px;
+}
+
+.task-origin-label {
+  color: var(--ink-3);
+}
+
+.task-origin-id {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--ink-2);
+}
+
+.task-origin-muted {
+  color: var(--ink-3);
+}
+
+.task-origin-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 2px;
+  padding: 1px 4px;
+  color: var(--accent);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.task-origin-link:hover {
+  color: var(--accent-strong, var(--accent));
+  text-decoration: underline;
 }
 
 .steps {

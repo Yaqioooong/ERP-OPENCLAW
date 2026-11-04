@@ -14,9 +14,14 @@ class FakeOwnership:
     def __init__(self):
         self.owners = {"thread-a": "u_a", "thread-b": "u_b"}
         self.deleted: list[str] = []
+        self.released: list[str] = []
 
     def get_owner(self, thread_id):
         return self.owners.get(thread_id)
+
+    def release(self, thread_id):
+        self.released.append(thread_id)
+        self.owners.pop(thread_id, None)
 
 
 def build_app(user: AuthenticatedUser, monkeypatch, ownership: FakeOwnership):
@@ -100,3 +105,16 @@ def test_legacy_thread_not_visible_to_requester(monkeypatch):
     client = build_app(user, monkeypatch, FakeOwnership())
     listing = client.get("/api/history")
     assert "legacy" not in [item["thread_id"] for item in listing.json()["sessions"]]
+
+
+def test_delete_session_releases_ownership(monkeypatch):
+    user = AuthenticatedUser(user_id="u_a", username="alice")
+    ownership = FakeOwnership()
+    client = build_app(user, monkeypatch, ownership)
+
+    response = client.delete("/api/history/thread-a")
+
+    assert response.status_code == 200
+    assert ownership.deleted == ["thread-a"]
+    assert ownership.released == ["thread-a"]
+    assert ownership.get_owner("thread-a") is None

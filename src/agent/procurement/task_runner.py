@@ -221,6 +221,7 @@ class ProcurementTaskRunner:
         return TaskRunResult(
             task_id=task_id,
             thread_id=thread_id,
+            conversation_id=conversation_id,
             status=TaskStatus.RUNNING.value,
             current_node=None,
             interrupt=None,
@@ -357,6 +358,22 @@ class ProcurementTaskRunner:
 
     async def get_record(self, task_id: str):
         return await self._tasks.get(task_id)
+
+    async def list_by_conversation(
+            self,
+            *,
+            conversation_id: str,
+            user_id: str,
+            limit: int = 50,
+            offset: int = 0,
+    ) -> list[TaskRecord]:
+        """列出某用户在某来源对话中创建的任务。"""
+        return await self._tasks.list_by_conversation(
+            user_id=user_id,
+            conversation_id=conversation_id,
+            limit=limit,
+            offset=offset,
+        )
 
     async def get(
             self,
@@ -516,6 +533,7 @@ class ProcurementTaskRunner:
         return TaskRunResult(
             task_id=record.task_id,
             thread_id=thread_id,
+            conversation_id=record.conversation_id,
             status=record.status,
             current_node=record.current_node,
             interrupt=None,
@@ -577,9 +595,15 @@ class ProcurementTaskRunner:
         if snapshot.interrupts:
             interrupt_payload = snapshot.interrupts[0].value
 
+        conversation_id = (
+            record.conversation_id
+            if record is not None
+            else values.get("conversation_id")
+        )
         return TaskRunResult(
             task_id=task_id,
             thread_id=config["configurable"]["thread_id"],
+            conversation_id=conversation_id,
             status=values.get("status", TaskStatus.RUNNING.value),
             current_node=current_node,
             interrupt=interrupt_payload,

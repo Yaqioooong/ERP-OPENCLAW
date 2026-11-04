@@ -49,6 +49,17 @@ def _context(runtime: ToolRuntime) -> tuple[str, str, tuple[str, ...]]:
     return user_id, username, roles
 
 
+def _conversation_id(runtime: ToolRuntime) -> str | None:
+    """当前对话 ID；只从服务端运行时上下文读取，缺失时由调用方失败关闭。"""
+    context = getattr(runtime, "context", None)
+    if isinstance(context, dict):
+        value = context.get("thread_id")
+    else:
+        value = getattr(context, "thread_id", None)
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def _dump(result: Any) -> str:
     data = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
     return json.dumps(data, ensure_ascii=False, default=str)
@@ -70,6 +81,7 @@ def _public_result(result: Any) -> dict[str, Any]:
         "status": data.get("status"),
         "task_id": data.get("task_id"),
         "thread_id": data.get("thread_id"),
+        "conversation_id": data.get("conversation_id"),
         "interrupt": interrupt,
         "state_summary": state_summary,
         "recoverable": data.get("recoverable"),
@@ -205,6 +217,16 @@ async def start_procurement_task(
 ) -> str:
     """启动完整采购任务：分析 → 审批 → 订单执行 → 核验。"""
     user_id, username, roles = _context(runtime)
+    conversation_id = _conversation_id(runtime)
+    if not conversation_id:
+        return json.dumps(
+            {
+                "status": "error",
+                "error": "CONVERSATION_CONTEXT_MISSING",
+                "message": "缺少来源对话，任务未创建；请从对话中重新发起。",
+            },
+            ensure_ascii=False,
+        )
     runner = await get_task_runner()
     normalized = _normalize_request(request)
     normalized = _restore_confirmed_part_identity(
@@ -216,6 +238,7 @@ async def start_procurement_task(
             raw_request="",
             user_id=user_id,
             username=username,
+            conversation_id=conversation_id,
             request=normalized,
             roles=roles,
         )

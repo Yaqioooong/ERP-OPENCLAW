@@ -83,7 +83,11 @@
         <span>{{ pausedHint }}</span>
       </div>
 
-      <ProcurementTaskPanel v-if="showProcurement" @close="closeProcurement" />
+      <ProcurementTaskPanel
+        v-if="showProcurement"
+        @close="closeProcurement"
+        @open-conversation="handleOpenOriginConversation"
+      />
 
       <ToastHost />
 
@@ -537,6 +541,12 @@ function openProcurement() {
 
 function closeProcurement() {
   showProcurement.value = false
+}
+
+async function handleOpenOriginConversation(threadId) {
+  if (!threadId) return
+  showProcurement.value = false
+  await handleSelectSession(threadId)
 }
 
 async function handleOpenTask(taskId) {

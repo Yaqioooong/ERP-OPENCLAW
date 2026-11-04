@@ -423,6 +423,7 @@ async def delete_session(
         success = await agent_loader.delete_session(thread_id)
 
         if success:
+            get_thread_ownership_store().release(thread_id)
             return DeleteSessionResponse(success=True, message="会话已删除")
         else:
             return DeleteSessionResponse(success=False, message="删除会话失败")
