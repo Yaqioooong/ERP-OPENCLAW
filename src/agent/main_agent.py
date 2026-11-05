@@ -37,13 +37,18 @@ from agent.config import (
     AGENTS_MD_FILENAME,
     CHECKPOINTER,
     DOWNLOAD_DIR,
+    FALLBACK_MODEL,
     LOCAL_AGENTS_MD,
     MAIN_MODEL,
+    MODEL_RETRY_INITIAL_DELAY_SECONDS,
+    MODEL_RETRY_MAX_ATTEMPTS,
+    MODEL_RETRY_MAX_DELAY_SECONDS,
     REDIS_CLIENT,
     SANDBOX_CONFIG,
     SKILLS_STORE_NAMESPACE,
     STORE,
     SUMMARY_MODEL,
+    SUMMARY_MODEL_FALLBACK,
 )
 from agent.log_utils import MyLogger
 from agent.memory.prompts import system_prompt
@@ -53,6 +58,10 @@ from agent.middleware_config import (
 )
 from agent.memory.candidate_generator import MemoryCandidateGenerator
 from agent.memory.identity import user_namespace_for_runtime
+from agent.model_resilience import (
+    build_model_fallback_middleware,
+    build_model_retry_middleware,
+)
 from agent.memory.preference_lock import RedisPreferenceLock
 from agent.memory.preference_service import PreferenceMemoryService
 from agent.memory.user_memory_backend import UserMemoryBackend
@@ -60,6 +69,7 @@ from agent.middlewares.context_injection import ContextInjectionMiddleware
 from agent.middlewares.delegation_contract import DelegationContractMiddleware
 from agent.middlewares.memory_update import MemoryUpdateMiddleware
 from agent.middlewares.skills_sync import SkillsSyncMiddleware
+from agent.middlewares.tool_resilience import ToolResilienceMiddleware
 from agent.middlewares.tools_summarization import build_summarization_middleware
 from agent.middlewares.user_skills_restore import UserSkillsRestoreMiddleware
 from agent.schema import ProcurementContext
@@ -158,7 +168,7 @@ async def create_main_agent(
         backend=user_memory_backend,
         lock=RedisPreferenceLock(REDIS_CLIENT),
     )
-    candidate_generator = MemoryCandidateGenerator(SUMMARY_MODEL)
+    candidate_generator = MemoryCandidateGenerator(SUMMARY_MODEL_FALLBACK)
 
     # --- Phase 2: MCP工具加载 ---
     logger.info("加载 MCP 工具")
@@ -251,12 +261,21 @@ async def create_main_agent(
         DelegationContractMiddleware(
             known_subagents=known_subagents or None,
         ),
+        # 工具兜底：超时/异常转结构化 tool error；task 由委派契约处理。
+        ToolResilienceMiddleware(skip_tools=("task",)),
         SkillsSyncMiddleware(sandbox_backend),
         UserSkillsRestoreMiddleware(sandbox_backend, SKILLS_STORE_NAMESPACE),
         build_summarization_middleware(backend, SUMMARY_MODEL),
         MemoryUpdateMiddleware(
             generator=candidate_generator,
             preference_service=preference_service,
+        ),
+        # 模型兜底：先按可重试错误退避重试，耗尽后切备用模型。
+        build_model_fallback_middleware(FALLBACK_MODEL),
+        build_model_retry_middleware(
+            max_retries=MODEL_RETRY_MAX_ATTEMPTS,
+            initial_delay=MODEL_RETRY_INITIAL_DELAY_SECONDS,
+            max_delay=MODEL_RETRY_MAX_DELAY_SECONDS,
         ),
         ModelCallLimitMiddleware(run_limit=50),
         ToolCallLimitMiddleware(run_limit=200)

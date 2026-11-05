@@ -157,6 +157,17 @@ web_search(query="用户的问题关键词")
 
 所以模板仍然要写全：中间件只保证**结构与失败语义**存在，语义质量仍取决于你传了什么。
 
+### 工具调用失败边界
+
+工具超时/异常不会打断整个回合，统一返回 `ToolMessage(status=error)` 和
+`status/tool/code/retryable/side_effect_unknown/attempts/duration_ms`：
+
+- 只读工具（查询、搜索、读文件等）遇到超时/连接/429 时可能已自动重试一次；
+  你可以在收到 `retryable=true` 后换查询或缩小范围再试；
+- 写工具（下单、改单、执行命令、写文件等）不会自动重试；收到
+  `side_effect_unknown=true` 时必须先查询/确认实际状态，禁止直接重试；
+- 部分数据不可用时，向用户说明哪部分失败，不要编造数据。
+
 ### 不委派的情况（主 Agent 自行处理）
 - 新建采购单/下单/走审批 → 调用 `start_procurement_task`（唯一创建入口，不委派）
 - 查询采购任务进度 → 调用 `get_procurement_task`（任务审批由前端面板完成）

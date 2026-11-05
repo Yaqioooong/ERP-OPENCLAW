@@ -87,7 +87,7 @@ async def get_database() -> Database:
 
 
 async def build_production_dependencies() -> ProcurementDependencies:
-    from agent.config import SUMMARY_MODEL
+    from agent.config import SUMMARY_MODEL_FALLBACK
     from agent.tools.mcp_client import load_mcp_tools
 
     _, analyst_tools, order_tools, _ = await load_mcp_tools()
@@ -133,7 +133,7 @@ async def build_production_dependencies() -> ProcurementDependencies:
         )
 
     analysis_pipeline = TrustedAnalysisPipeline(
-        narrator=LlmReportNarrator(SUMMARY_MODEL),
+        narrator=LlmReportNarrator(SUMMARY_MODEL_FALLBACK),
         sandbox_verifier=sandbox_verifier,
     )
 
@@ -143,7 +143,7 @@ async def build_production_dependencies() -> ProcurementDependencies:
     )
 
     return ProcurementDependencies(
-        request_parser=LLMRequestParser(SUMMARY_MODEL),
+        request_parser=LLMRequestParser(SUMMARY_MODEL_FALLBACK),
         data_provider=procurement_data_provider,
         plan_proposer=DeterministicPlanProposer(),
         plan_builder=DefaultPlanBuilder(),

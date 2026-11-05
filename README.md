@@ -124,6 +124,9 @@ LANGSMITH_PROJECT=...
 - `AUTH_REGISTER_MAX_ATTEMPTS` / `AUTH_REGISTER_WINDOW_SECONDS`：同一 IP 的注册频率限制，默认 5 次/小时。
 - `AUTH_LOGIN_MAX_FAILURES` / `AUTH_LOGIN_WINDOW_SECONDS`：同一用户名+IP 的登录失败限制，默认 10 次/5 分钟。
 - `PREFERENCE_SUPPLIER_TTL_DAYS` / `PREFERENCE_QUERY_TTL_DAYS`：近期供应商/查询的过期天数，默认 90 / 30。
+- `MODEL_REQUEST_TIMEOUT_SECONDS`：模型请求超时，默认 `180`。
+- `MODEL_RETRY_MAX_ATTEMPTS`：模型可重试错误的最大重试次数，默认 `2`（共 3 次尝试）。
+- `MODEL_RETRY_INITIAL_DELAY_SECONDS` / `MODEL_RETRY_MAX_DELAY_SECONDS`：指数退避初始/上限，默认 `1.0` / `8.0`。
 
 ### 4. 运行评测
 
@@ -306,6 +309,37 @@ result = await graph.ainvoke(
 `src/agent/middlewares/delegation_contract.py`，回归见
 `tests/test_delegation_contract.py`、`tests/test_delegation_runtime.py`
 （规格 `specs/010-delegation-contract`）。
+
+### 工具调用异常与超时
+
+主 Agent、`procurement-analyst`、`procurement-order` 的工具调用都经过
+`ToolResilienceMiddleware`（`src/agent/middlewares/tool_resilience.py`）：
+
+- 默认超时 45s；`execute` 300s；图表/压缩/技能/下载/订单写 120s；
+- 只读工具遇到超时/连接/429 最多重试一次（2 次尝试，退避 0.25s）；
+- 写工具（`order_create`/`order_update`/`execute`/文件写入等）不自动重试，
+  超时/异常返回 `side_effect_unknown=true`，提示先查询/确认实际状态；
+- 失败统一转成 `ToolMessage(status=error)`，带 `TOOL_TIMEOUT`/`TOOL_UNAVAILABLE`/
+  `TOOL_RATE_LIMITED`/`TOOL_FAILED` 和 `retryable`，不再冒泡打断回合；
+- `GraphInterrupt`/`CancelledError` 原样传播；`task` 由委派契约处理，不重复包装。
+
+回归见 `tests/test_tool_resilience.py`（规格 `specs/011-tool-resilience`）。
+
+### 模型调用超时与降级
+
+主 Agent 与两个采购子 Agent 的模型调用都接入了 LangChain 的
+`ModelFallbackMiddleware` + `ModelRetryMiddleware`：
+
+- 请求超时 `180s`（`MODEL_REQUEST_TIMEOUT_SECONDS`）；
+- 429/5xx/连接失败等可重试错误最多重试 2 次（3 次尝试），指数退避，
+  初始 `1s`、上限 `8s`（`MODEL_RETRY_*`）；
+- 重试耗尽后自动切到 `FALLBACK_MODEL`；备用模型也失败才抛出，由上层兜底；
+- 400/401/403 等不可重试错误不重试，直接进入 fallback 或明确失败；
+- 摘要直调路径（采购解析、报告解释、记忆候选）使用
+  `SUMMARY_MODEL_FALLBACK`；`SummarizationMiddleware` 内部仍使用摘要模型本身，
+  失败由 `task` 委派边界兜底。
+
+回归见 `tests/test_model_resilience.py`（规格 `specs/012-model-resilience`）。
 
 ### 用户偏好持久化
 

@@ -17,6 +17,21 @@ from agent.env_utils import (
 )
 
 # ---------- 模型配置 ----------
+# 模型调用的统一超时与重试策略。主模型的重试由 Agent 中间件统一控制，
+# 因此 SDK 层不再重复重试；摘要模型保留一次 SDK 重试以覆盖直调路径。
+MODEL_REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("MODEL_REQUEST_TIMEOUT_SECONDS", "180")
+)
+MODEL_RETRY_MAX_ATTEMPTS = int(
+    os.getenv("MODEL_RETRY_MAX_ATTEMPTS", "2")
+)
+MODEL_RETRY_INITIAL_DELAY_SECONDS = float(
+    os.getenv("MODEL_RETRY_INITIAL_DELAY_SECONDS", "1.0")
+)
+MODEL_RETRY_MAX_DELAY_SECONDS = float(
+    os.getenv("MODEL_RETRY_MAX_DELAY_SECONDS", "8.0")
+)
+
 # 主 Agent 模型
 MAIN_MODEL = ChatOpenAI(
     model="deepseek-v4-pro",
@@ -24,6 +39,8 @@ MAIN_MODEL = ChatOpenAI(
     openai_api_key=DEEPSEEK_API_KEY,
     openai_api_base=DEEPSEEK_BASE_URL,
     max_tokens=256000,
+    timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+    max_retries=0,
     model_kwargs={
         "extra_body": {
             "thinking": {"type": "disabled"}
@@ -37,6 +54,8 @@ SUMMARY_MODEL = ChatOpenAI(
     openai_api_key=DEEPSEEK_API_KEY,
     openai_api_base=DEEPSEEK_BASE_URL,
     max_tokens=256000,
+    timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+    max_retries=1,
     model_kwargs={
         "extra_body": {
             "thinking": {"type": "disabled"}
@@ -51,6 +70,9 @@ FALLBACK_MODEL = init_chat_model(
     temperature=1.0,
     base_url=ALIBABA_BASE_URL,
     api_key=ALIBABA_API_KEY,
+    max_tokens=8192,
+    timeout=MODEL_REQUEST_TIMEOUT_SECONDS,
+    max_retries=0,
     profile={
         "max_input_tokens": 128000,
         "max_output_tokens": 8192,
@@ -58,6 +80,11 @@ FALLBACK_MODEL = init_chat_model(
         "structured_output": True,
     }
 )
+
+# 摘要模型的直调路径（采购解析、报告解释、记忆候选）没有 Agent 中间件，
+# 用 Runnable fallback 覆盖；Summarization 中间件仍直接使用 SUMMARY_MODEL。
+SUMMARY_MODEL_FALLBACK = SUMMARY_MODEL.with_fallbacks([FALLBACK_MODEL])
+
 
 # ---------- 沙箱配置 ----------
 # OpenSandbox 沙箱配置连接
