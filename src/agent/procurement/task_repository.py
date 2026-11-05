@@ -21,7 +21,11 @@ CREATE TABLE IF NOT EXISTS procurement_task (
     created_at     TIMESTAMPTZ NOT NULL,
     updated_at     TIMESTAMPTZ NOT NULL,
     resumed_at     TIMESTAMPTZ,
-    completed_at   TIMESTAMPTZ
+    completed_at   TIMESTAMPTZ,
+    order_id       TEXT,
+    requires_manual_review BOOLEAN NOT NULL DEFAULT FALSE,
+    execution_key  TEXT,
+    reconciled_at  TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_procurement_task_user_status
@@ -33,6 +37,17 @@ CREATE INDEX IF NOT EXISTS idx_procurement_task_conversation
 
 CREATE INDEX IF NOT EXISTS idx_procurement_task_status
     ON procurement_task(status, updated_at);
+"""
+
+_ALTER_SCHEMA = """
+ALTER TABLE procurement_task
+    ADD COLUMN IF NOT EXISTS order_id TEXT;
+ALTER TABLE procurement_task
+    ADD COLUMN IF NOT EXISTS requires_manual_review BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE procurement_task
+    ADD COLUMN IF NOT EXISTS execution_key TEXT;
+ALTER TABLE procurement_task
+    ADD COLUMN IF NOT EXISTS reconciled_at TIMESTAMPTZ;
 """
 
 _TERMINAL_STATUSES = {
@@ -50,6 +65,8 @@ _RECOVERABLE_STATUSES = [
     "plan_ready",
     "awaiting_approval",
     "awaiting_retry",
+    "awaiting_review",
+    "not_created",
     "verifying",
     "approved_pending_execution",
 ]
@@ -77,6 +94,69 @@ class TaskRepository(Protocol):
 
     async def mark_resumed(self, task_id: str, now: datetime) -> None: ...
 
+    async def apply_reconciliation(
+        self,
+        *,
+        task_id: str,
+        status: str,
+        order_id: str | None = None,
+        requires_manual_review: bool = False,
+        execution_key: str | None = None,
+        error: dict | None = None,
+        now: datetime | None = None,
+    ) -> bool: ...
+
+    async def apply_reconciliation(
+        self,
+        *,
+        task_id: str,
+        status: str,
+        order_id: str | None = None,
+        requires_manual_review: bool = False,
+        execution_key: str | None = None,
+        error: dict | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """对账/人工复核回写任务状态。
+
+        只允许纠正订单相关状态；cancelled/rejected 不得被覆盖。
+        """
+        await self.setup()
+        timestamp = now or datetime.now().astimezone()
+        error_code = error.get("code") if error else None
+        error_message = error.get("message") if error else None
+        async with self._database.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE procurement_task
+                   SET status = $1,
+                       order_id = $2,
+                       requires_manual_review = $3,
+                       execution_key = COALESCE($4, execution_key),
+                       last_error_code = $5,
+                       last_error_message = $6,
+                       updated_at = $7::timestamptz,
+                       reconciled_at = $7::timestamptz,
+                       completed_at = CASE
+                           WHEN $1 = 'completed' THEN $7::timestamptz
+                           ELSE NULL
+                       END
+                 WHERE task_id = $8
+                   AND status <> ALL($9::text[])
+                RETURNING task_id
+                """,
+                status,
+                order_id,
+                bool(requires_manual_review),
+                execution_key,
+                error_code,
+                error_message,
+                timestamp,
+                task_id,
+                ["cancelled", "rejected"],
+            )
+        return row is not None
+
     async def list_recoverable(self, *, limit: int = 200) -> list[TaskRecord]: ...
 
     async def list_by_user(self, user_id: str, *, limit: int = 50) -> list[TaskRecord]: ...
@@ -94,10 +174,15 @@ class TaskRepository(Protocol):
 class PostgresTaskRepository:
     def __init__(self, database: Database):
         self._database = database
+        self._ready = False
 
     async def setup(self) -> None:
+        if self._ready:
+            return
         async with self._database.acquire() as conn:
             await conn.execute(_SCHEMA)
+            await conn.execute(_ALTER_SCHEMA)
+        self._ready = True
 
     async def create(self, record: TaskRecord) -> None:
         await self.setup()
@@ -197,6 +282,57 @@ class PostgresTaskRepository:
                 now,
                 task_id,
             )
+
+    async def apply_reconciliation(
+        self,
+        *,
+        task_id: str,
+        status: str,
+        order_id: str | None = None,
+        requires_manual_review: bool = False,
+        execution_key: str | None = None,
+        error: dict | None = None,
+        now: datetime | None = None,
+    ) -> bool:
+        """对账/人工复核回写任务状态。
+
+        只允许纠正订单相关状态；cancelled/rejected 不得被覆盖。
+        """
+        await self.setup()
+        timestamp = now or datetime.now().astimezone()
+        error_code = error.get("code") if error else None
+        error_message = error.get("message") if error else None
+        async with self._database.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE procurement_task
+                   SET status = $1,
+                       order_id = $2,
+                       requires_manual_review = $3,
+                       execution_key = COALESCE($4, execution_key),
+                       last_error_code = $5,
+                       last_error_message = $6,
+                       updated_at = $7::timestamptz,
+                       reconciled_at = $7::timestamptz,
+                       completed_at = CASE
+                           WHEN $1 = 'completed' THEN $7::timestamptz
+                           ELSE NULL
+                       END
+                 WHERE task_id = $8
+                   AND status <> ALL($9::text[])
+                RETURNING task_id
+                """,
+                status,
+                order_id,
+                bool(requires_manual_review),
+                execution_key,
+                error_code,
+                error_message,
+                timestamp,
+                task_id,
+                ["cancelled", "rejected"],
+            )
+        return row is not None
 
     async def list_recoverable(self, *, limit: int = 200) -> list[TaskRecord]:
         await self.setup()

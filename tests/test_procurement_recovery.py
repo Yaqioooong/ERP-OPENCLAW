@@ -383,6 +383,22 @@ async def test_persistent_unknown_enters_retry_without_recreating(db):
     assert executor.create_calls == 1
     assert executor.verify_calls == 1
 
+    cancelled = await runner.resume(
+        task_id=started.task_id,
+        user_id="u1",
+        username="张三",
+        resume_data={"action": "cancel"},
+    )
+
+    assert cancelled.status == "awaiting_review"
+    assert cancelled.state_summary["requires_manual_review"] is True
+    assert (
+        cancelled.state_summary["last_error"]["code"]
+        == "ORDER_OUTCOME_UNKNOWN_AFTER_CANCEL"
+    )
+    assert executor.create_calls == 1
+    assert executor.verify_calls == 1
+
 
 @pytest.mark.anyio
 async def test_reconcile_marks_missing_checkpoint_orphaned(db):

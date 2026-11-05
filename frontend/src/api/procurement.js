@@ -86,3 +86,28 @@ export async function resumeProcurementTask(taskId, resume) {
   if (!response.ok) throw await parseError(response, '恢复采购任务失败')
   return response.json()
 }
+
+
+export async function resolveExecution(idempotencyKey, payload) {
+  const response = await fetch(
+    `${API_BASE}/executions/${encodeURIComponent(idempotencyKey)}/resolve`,
+    {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: jsonHeaders(),
+      body: JSON.stringify(payload),
+    },
+  )
+  notifyIfUnauthorized(response)
+  if (!response.ok) throw await parseError(response, '提交订单复核失败')
+  return response.json()
+}
+
+export async function listReviewExecutions() {
+  const response = await fetch(`${API_BASE}/executions/unknown`, {
+    credentials: 'same-origin',
+  })
+  notifyIfUnauthorized(response)
+  if (!response.ok) throw await parseError(response, '查询待复核订单失败')
+  return response.json()
+}

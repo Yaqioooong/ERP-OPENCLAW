@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS procurement_order_execution (
     plan_snapshot     JSONB,
     attempt_count     INTEGER NOT NULL DEFAULT 0,
     verification_attempts INTEGER NOT NULL DEFAULT 0,
+    verification_unavailable_attempts INTEGER NOT NULL DEFAULT 0,
     requires_manual_review INTEGER NOT NULL DEFAULT 0,
     remote_status     INTEGER,
     last_error_code   TEXT,
@@ -36,6 +37,9 @@ CREATE TABLE IF NOT EXISTS procurement_order_execution (
     last_verified_at  TIMESTAMPTZ,
     UNIQUE (task_id, plan_version, plan_hash)
 );
+
+ALTER TABLE procurement_order_execution
+    ADD COLUMN IF NOT EXISTS verification_unavailable_attempts INTEGER NOT NULL DEFAULT 0;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uk_procurement_execution_order_number
     ON procurement_order_execution(order_number)
@@ -100,6 +104,12 @@ class ExecutionRepository(Protocol):
         limit: int = 50,
     ) -> list[ExecutionRecord]: ...
 
+    async def list_manual_review(
+        self,
+        *,
+        limit: int = 50,
+    ) -> list[ExecutionRecord]: ...
+
     async def try_acquire_reconcile(
         self,
         *,
@@ -147,6 +157,15 @@ class ExecutionRepository(Protocol):
     ) -> None: ...
 
     async def mark_still_unknown(
+        self,
+        *,
+        idempotency_key: str,
+        message: str,
+        verification: dict | None,
+        now: datetime,
+    ) -> None: ...
+
+    async def mark_verification_unavailable(
         self,
         *,
         idempotency_key: str,
@@ -380,6 +399,32 @@ class PostgresExecutionRepository:
             )
         return [_row_to_record(row) for row in rows]
 
+    async def list_manual_review(
+        self,
+        *,
+        limit: int = 50,
+    ) -> list[ExecutionRecord]:
+        await self.setup()
+        async with self._database.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM procurement_order_execution
+                 WHERE status = 'needs_review'
+                    OR (
+                        status = 'failed'
+                        AND last_error_code IN (
+                            'ORDER_NOT_FOUND_CONFIRMED',
+                            'ORDER_CANCELLED_REMOTE',
+                            'MANUAL_CONFIRMED_NOT_CREATED'
+                        )
+                    )
+                 ORDER BY updated_at ASC
+                 LIMIT $1
+                """,
+                limit,
+            )
+        return [_row_to_record(row) for row in rows]
+
     async def try_acquire_reconcile(
         self,
         *,
@@ -558,6 +603,37 @@ class PostgresExecutionRepository:
                        last_verified_at = $1,
                        reconcile_lease_expires_at = NULL,
                        last_error_code = 'ORDER_RESULT_UNKNOWN',
+                       last_error_message = $2,
+                       verification_payload = $3::jsonb,
+                       updated_at = $1
+                 WHERE idempotency_key = $4
+                """,
+                now,
+                message,
+                _json(verification),
+                idempotency_key,
+            )
+
+    async def mark_verification_unavailable(
+        self,
+        *,
+        idempotency_key: str,
+        message: str,
+        verification: dict | None,
+        now: datetime,
+    ) -> None:
+        """核验通道不可用：只增加不可用计数，不推进未找到确认。"""
+        await self.setup()
+        async with self._database.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE procurement_order_execution
+                   SET status = 'unknown',
+                       verification_unavailable_attempts =
+                           verification_unavailable_attempts + 1,
+                       last_verified_at = $1,
+                       reconcile_lease_expires_at = NULL,
+                       last_error_code = 'ORDER_VERIFY_UNAVAILABLE',
                        last_error_message = $2,
                        verification_payload = $3::jsonb,
                        updated_at = $1

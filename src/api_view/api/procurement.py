@@ -7,6 +7,7 @@ from typing import Any, Literal
 from agent.procurement.dependencies import (
     get_order_reconciler,
     get_task_event_service,
+    get_task_reconciliation_service,
     get_task_runner,
 )
 from agent.procurement.request_normalization import ProcurementRequestInputError
@@ -90,6 +91,16 @@ def _task_payload(result: Any, user: AuthenticatedUser) -> dict[str, Any]:
         data.get("conversation_id"), user
     )
     return data
+
+
+def _can_manage_task(task, user: AuthenticatedUser) -> bool:
+    return bool(
+        task is not None
+        and (
+            task.user_id == user.user_id
+            or (set(user.roles) & {"approver", "admin"})
+        )
+    )
 
 
 def _task_list_item(record) -> TaskListItem:
@@ -266,26 +277,37 @@ async def list_unknown_executions(
         limit: int = 50,
         user: AuthenticatedUser = Depends(require_password_ready),
 ):
+    """列出待对账/待人工复核的订单执行记录。"""
     try:
         reconciler = await get_order_reconciler()
         runner = await get_task_runner()
-        records = await reconciler.list_pending(limit=limit)
+        pending = await reconciler.list_pending(limit=limit)
+        review = await reconciler.list_manual_review(limit=limit)
         items = []
-        for record in records:
+        seen: set[str] = set()
+        for record in [*pending, *review]:
+            if record.idempotency_key in seen:
+                continue
+            seen.add(record.idempotency_key)
             task = await runner.get_record(record.task_id)
-            if task is None or (
-                task.user_id != user.user_id and "admin" not in user.roles
-            ):
+            if not _can_manage_task(task, user):
                 continue
             items.append(
                 {
                     "idempotency_key": record.idempotency_key,
                     "task_id": record.task_id,
                     "status": record.status.value,
+                    "task_status": task.status if task else None,
+                    "requires_manual_review": bool(
+                        record.requires_manual_review
+                        or record.status.value == "needs_review"
+                    ),
+                    "review_reason": record.last_error_code,
                     "order_id": record.order_id,
                     "order_number": record.order_number,
                     "verification_attempts": record.verification_attempts,
                     "last_error_code": record.last_error_code,
+                    "last_error_message": record.last_error_message,
                     "updated_at": record.updated_at.isoformat(),
                 }
             )
@@ -306,11 +328,14 @@ async def reconcile_execution(
         if record is None:
             raise HTTPException(status_code=404, detail="执行记录不存在")
         task = await runner.get_record(record.task_id)
-        if task is None or (
-            task.user_id != user.user_id and "admin" not in user.roles
-        ):
+        if not _can_manage_task(task, user):
             raise HTTPException(status_code=403, detail="无权操作该订单执行记录")
-        return await reconciler.verify_by_key(idempotency_key)
+        result = await reconciler.verify_by_key(idempotency_key)
+        refreshed = await reconciler.get_execution(idempotency_key)
+        if refreshed is not None:
+            service = await get_task_reconciliation_service()
+            await service.apply_execution_record(refreshed)
+        return result
     except HTTPException:
         raise
     except RuntimeError as exc:
@@ -330,16 +355,29 @@ async def resolve_execution(
         if record is None:
             raise HTTPException(status_code=404, detail="执行记录不存在")
         task = await runner.get_record(record.task_id)
-        if task is None or (
-            task.user_id != user.user_id and "admin" not in user.roles
-        ):
+        if not _can_manage_task(task, user):
             raise HTTPException(status_code=403, detail="无权操作该订单执行记录")
-        return await reconciler.manual_resolve(
+        result = await reconciler.manual_resolve(
             idempotency_key=idempotency_key,
             action=request.action,
             comment=request.comment,
             order_id=request.order_id,
         )
+        refreshed = await reconciler.get_execution(idempotency_key)
+        task_synced = False
+        invalid_action = (
+            result.error is not None
+            and result.error.code in {
+                "ORDER_ID_REQUIRED",
+                "INVALID_MANUAL_ACTION",
+            }
+        )
+        if refreshed is not None and not invalid_action:
+            service = await get_task_reconciliation_service()
+            task_synced = await service.apply_execution_record(refreshed)
+        payload = result.model_dump(mode="json")
+        payload["task_synced"] = task_synced
+        return payload
     except HTTPException:
         raise
     except RuntimeError as exc:

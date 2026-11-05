@@ -125,6 +125,14 @@
           </div>
         </div>
 
+        <div v-if="cancelledMessage" class="hitl-callout warn">
+          <TriangleAlert :size="14" />
+          <div>
+            <strong>任务已取消</strong>
+            <p>{{ cancelledMessage }}</p>
+          </div>
+        </div>
+
         <div v-if="approval" class="panel-section approval-section">
           <div class="panel-section-head">
             <span class="panel-section-title">待审批方案</span>
@@ -349,6 +357,101 @@
           </div>
         </div>
 
+        <div v-if="requiresReview" class="panel-section review-section">
+          <div class="panel-section-head">
+            <span class="panel-section-title">订单结果需要人工复核</span>
+          </div>
+          <div class="hitl-callout warn">
+            <TriangleAlert :size="14" />
+            <div>
+              <strong>{{ reviewReason.code || '订单结果不确定' }}</strong>
+              <p>{{ reviewReason.message || '后台对账未能确认订单是否与方案一致。' }}</p>
+            </div>
+          </div>
+          <p class="hitl-note">
+            执行记录：{{ reviewKey || '未提供' }}
+            <span v-if="currentOrderId"> · 当前订单：{{ currentOrderId }}</span>
+          </p>
+          <label class="hitl-note review-field">
+            远端订单号
+            <input
+              v-model="reviewOrderId"
+              type="text"
+              placeholder="确认已创建时填写，例如 PO20261105001"
+            />
+          </label>
+          <label class="hitl-note review-field">
+            备注
+            <input v-model="reviewComment" type="text" placeholder="可选" />
+          </label>
+          <div class="panel-actions">
+            <button
+              type="button"
+              class="btn btn-danger-ghost"
+              :disabled="reviewLoading || !reviewKey"
+              @click="submitReview('mark_failed')"
+            >
+              确认未创建
+            </button>
+            <button
+              type="button"
+              class="btn btn-primary"
+              :disabled="reviewLoading || !reviewKey"
+              @click="submitReview('mark_succeeded')"
+            >
+              <span v-if="reviewLoading" class="spinner" aria-hidden="true" />
+              {{ reviewLoading ? '正在提交…' : '确认已创建' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-else-if="reviewResolved" class="panel-section review-section review-resolved">
+          <div class="panel-section-head">
+            <span class="panel-section-title">订单已确认未创建</span>
+          </div>
+          <div class="hitl-callout accent">
+            <Check :size="14" />
+            <div>
+              <strong>该任务不会再创建订单</strong>
+              <p>{{ reviewReason.message || '已确认远端没有创建这笔订单。' }}</p>
+            </div>
+          </div>
+          <p class="hitl-note">执行记录：{{ reviewKey || '未提供' }}</p>
+          <details class="hitl-details review-correction">
+            <summary>如后续发现订单已创建，可手动回转</summary>
+            <div class="hitl-details-body">
+              <label class="hitl-note review-field">
+                远端订单号
+                <input
+                  v-model="reviewOrderId"
+                  type="text"
+                  placeholder="确认已创建时填写，例如 PO20261105001"
+                />
+              </label>
+              <label class="hitl-note review-field">
+                备注
+                <input v-model="reviewComment" type="text" placeholder="可选" />
+              </label>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="reviewLoading || !reviewKey"
+                @click="submitReview('mark_succeeded')"
+              >
+                <span v-if="reviewLoading" class="spinner" aria-hidden="true" />
+                {{ reviewLoading ? '正在提交…' : '确认已创建' }}
+              </button>
+            </div>
+          </details>
+          <button
+            type="button"
+            class="btn btn-ghost btn-sm"
+            @click="emit('open-conversation')"
+          >
+            返回对话重新发起
+          </button>
+        </div>
+
         <div v-if="needInfo" class="panel-section clarification-section">
           <div class="hitl-callout warn">
             <CircleHelp :size="14" />
@@ -418,6 +521,7 @@ import MarkdownRenderer from './MarkdownRenderer.vue'
 import SupplementPanel from './hitl/SupplementPanel.vue'
 import { useToast } from '../composables/useToast'
 import { useTaskStore } from '../composables/useTaskStore'
+import { listReviewExecutions, resolveExecution } from '../api/procurement'
 import { formatClock, formatCurrency, formatDate } from '../utils/format'
 
 const emit = defineEmits(['close', 'open-conversation'])
@@ -435,6 +539,9 @@ const quantities = ref([])
 const rejectOpen = ref(false)
 const cancelOpen = ref(false)
 const refreshing = ref(false)
+const reviewOrderId = ref('')
+const reviewComment = ref('')
+const reviewLoading = ref(false)
 const initialLoading = ref(false)
 
 const approval = computed(() => task.value?.interrupt?.summary || null)
@@ -445,6 +552,20 @@ const retryInterrupt = computed(() =>
     : null,
 )
 const needInfo = computed(() => task.value?.status === 'need_info' && !approval.value)
+const reviewKey = ref('')
+const reviewResolved = computed(() => task.value?.status === 'not_created')
+const requiresReview = computed(() => {
+  const status = task.value?.status
+  if (status === 'not_created') return false
+  return (
+    status === 'awaiting_review' ||
+    !!task.value?.state_summary?.requires_manual_review
+  )
+})
+const reviewReason = computed(() => {
+  const value = task.value?.state_summary?.last_error
+  return value && typeof value === 'object' ? value : {}
+})
 const currentFailure = computed(() => {
   const candidate =
     task.value?.state_summary?.last_error ||
@@ -454,12 +575,17 @@ const currentFailure = computed(() => {
 const failureCode = computed(() => currentFailure.value?.code || '')
 const failureMessage = computed(() => {
   const status = task.value?.status
-  if (!['failed', 'rejected', 'cancelled', 'orphaned'].includes(status)) return ''
+  if (!['failed', 'rejected', 'orphaned'].includes(status)) return ''
   const error =
     task.value?.state_summary?.last_error || task.value?.interrupt?.last_error
   if (!error) return '任务已结束，请查看任务事件了解详情。'
   if (typeof error === 'string') return error
   return error.message || error.code || '任务执行失败。'
+})
+const cancelledMessage = computed(() => {
+  if (task.value?.status !== 'cancelled') return ''
+  if (task.value?.state_summary?.execution_status !== 'unknown') return ''
+  return '订单结果仍未确认，订单可能已创建；请人工核对后再决定是否重新发起。'
 })
 const failureDetails = computed(() => {
   const errors = currentFailure.value?.errors
@@ -502,6 +628,41 @@ const inventoryGaps = computed(() =>
   }).filter(Boolean),
 )
 
+const currentOrderId = computed(
+  () => task.value?.state_summary?.order_id || '',
+)
+watch(
+  () => [
+    task.value?.task_id,
+    task.value?.status,
+    task.value?.state_summary?.execution_key,
+  ],
+  async () => {
+    const fromState = task.value?.state_summary?.execution_key
+    if (fromState) {
+      reviewKey.value = fromState
+      return
+    }
+    reviewKey.value = ''
+    if (!requiresReview.value || !task.value?.task_id) return
+    try {
+      const items = await listReviewExecutions()
+      const found = items.find((item) => item.task_id === task.value.task_id)
+      if (found) reviewKey.value = found.idempotency_key
+    } catch {
+      /* 复核记录加载失败时保留手动刷新入口 */
+    }
+  },
+  { immediate: true },
+)
+watch(
+  currentOrderId,
+  (value) => {
+    if (value) reviewOrderId.value = value
+  },
+  { immediate: true },
+)
+
 const steps = [
   { key: 'analysis', label: '分析' },
   { key: 'approval', label: '审批' },
@@ -516,6 +677,8 @@ const statusLabel = computed(() => {
     analyzing: '分析中',
     awaiting_approval: '待审批',
     awaiting_retry: '待恢复',
+    awaiting_review: '待人工复核',
+    not_created: '确认未创建',
     approved_pending_execution: '已批准待执行',
     executing: '执行中',
     verifying: '核验中',
@@ -533,7 +696,7 @@ const statusClass = computed(() => {
   const status = task.value?.status || ''
   if (status === 'completed') return 'ok'
   if (['failed', 'rejected', 'cancelled', 'orphaned'].includes(status)) return 'bad'
-  if (['awaiting_approval', 'awaiting_retry', 'need_info'].includes(status)) return 'warn'
+  if (['awaiting_approval', 'awaiting_retry', 'awaiting_review', 'not_created', 'need_info'].includes(status)) return 'warn'
   return 'run'
 })
 
@@ -543,7 +706,7 @@ const stepStates = computed(() => {
   let current = 0
   if (['awaiting_approval', 'approved_pending_execution'].includes(status)) current = 1
   else if (status === 'executing') current = 2
-  else if (['verifying', 'completed'].includes(status)) current = 3
+  else if (['verifying', 'completed', 'awaiting_review', 'not_created'].includes(status)) current = 3
 
   return steps.map((_, index) => {
     if (status === 'completed') return 'done'
@@ -575,6 +738,8 @@ watch(
     approvalComment.value = ''
     rejectOpen.value = false
     cancelOpen.value = false
+    reviewOrderId.value = ''
+    reviewComment.value = ''
   },
 )
 
@@ -715,10 +880,56 @@ async function resumeRetry(action) {
     return
   }
   try {
-    await store.resume({ action })
+    const result = await store.resume({ action })
+    if (action === 'cancel' && result?.status === 'awaiting_review') {
+      toast('已停止重试；订单结果仍未确认，请人工核对', { tone: 'danger' })
+      return
+    }
     toast(action === 'cancel' ? '任务已取消' : '已提交重试', { tone: 'success' })
   } catch {
     /* 错误已写入 store.error */
+  }
+}
+
+async function submitReview(action) {
+  if (reviewLoading.value) return
+  error.value = ''
+  if (!reviewKey.value) {
+    error.value = '缺少执行记录编号，请刷新任务或联系管理员。'
+    return
+  }
+  const orderId = reviewOrderId.value.trim()
+  if (action === 'mark_succeeded' && !orderId) {
+    error.value = '请填写远端订单号后再确认。'
+    return
+  }
+  if (
+    action === 'mark_failed' &&
+    !window.confirm('确认远端没有创建这笔订单？确认后任务会进入“确认未创建”，仍可人工回转。')
+  ) {
+    return
+  }
+  reviewLoading.value = true
+  try {
+    const result = await resolveExecution(reviewKey.value, {
+      action,
+      order_id: action === 'mark_succeeded' ? orderId : null,
+      comment: reviewComment.value.trim(),
+    })
+    const latest = await store.refresh()
+    if (!latest) return
+    const settled = ['completed', 'not_created', 'failed'].includes(latest.status)
+    if (result?.task_synced === false && !settled) {
+      error.value = '执行结果已提交，但任务状态同步失败，请刷新后重试或联系管理员。'
+      return
+    }
+    toast(action === 'mark_succeeded' ? '订单已标记为创建' : '已确认未创建', {
+      tone: 'success',
+    })
+  } catch (exception) {
+    error.value = exception.message || String(exception)
+  } finally {
+    reviewLoading.value = false
   }
 }
 
@@ -739,6 +950,7 @@ const EVENT_LABELS = {
   'task.completed': '任务完成',
   'task.failed': '任务失败',
   'task.cancelled': '任务已取消',
+  'task.reconciled': '订单对账结果已回写',
   'approval.required': '等待人工审批',
   'approval.decided': '审批已完成',
   'order.creating': '正在创建订单',
@@ -1354,6 +1566,31 @@ onMounted(async () => {
 .event-time {
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
+}
+
+.review-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+}
+
+.review-field input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm, 6px);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+}
+
+.review-resolved > .btn {
+  margin-top: 10px;
+}
+
+.review-resolved .hitl-details {
+  margin-top: 10px;
 }
 
 @media (max-width: 640px) {

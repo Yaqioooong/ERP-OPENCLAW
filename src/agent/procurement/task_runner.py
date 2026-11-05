@@ -47,6 +47,12 @@ _TERMINAL_STATUSES = {
     TaskStatus.ORPHANED.value,
 }
 
+#: 由对账/人工复核写入的状态：checkpoint 可能仍是旧 failed，读取时以任务记录为准。
+_RECONCILED_STATUSES = {
+    TaskStatus.AWAITING_REVIEW.value,
+    TaskStatus.NOT_CREATED.value,
+}
+
 
 class ProcurementTaskRunner:
     def __init__(
@@ -404,6 +410,9 @@ class ProcurementTaskRunner:
         checked = 0
         for record in await self._tasks.list_recoverable(limit=limit):
             checked += 1
+            if record.status in _RECONCILED_STATUSES:
+                # 人工复核/确认未创建是任务仓储的事实，不能被旧 checkpoint 覆盖。
+                continue
             config = {"configurable": {"thread_id": record.thread_id}}
             snapshot = await self._graph.aget_state(config)
 
@@ -518,14 +527,31 @@ class ProcurementTaskRunner:
                 data=payload,
             )
 
-    def _terminal_snapshot_result(
+    def _record_snapshot_result(
         self,
         record: TaskRecord,
         values: dict,
         thread_id: str,
+        *,
+        recoverable: bool = False,
     ) -> TaskRunResult:
+        """任务记录优先的读取模型。
+
+        对账回写可能发生在 checkpoint 仍停留于 failed 之后；终态 completed
+        和人工复核 awaiting_review/not_created 都必须以任务记录为准。
+        """
+        execution_status = values.get("execution_status")
+        if record.status == TaskStatus.COMPLETED.value:
+            execution_status = "succeeded"
+        elif record.status == TaskStatus.AWAITING_REVIEW.value:
+            execution_status = "needs_review"
+        elif record.status == TaskStatus.NOT_CREATED.value:
+            execution_status = "failed"
+
         last_error = values.get("last_error")
-        if record.last_error_code or record.last_error_message:
+        if record.status == TaskStatus.COMPLETED.value:
+            last_error = None
+        elif record.last_error_code or record.last_error_message:
             last_error = {
                 "code": record.last_error_code,
                 "message": record.last_error_message or "任务执行失败。",
@@ -545,15 +571,34 @@ class ProcurementTaskRunner:
                 "analysis_report": values.get("analysis_report"),
                 "analysis_validation": values.get("analysis_validation"),
                 "analysis_sandbox": values.get("analysis_sandbox"),
-                "execution_status": values.get("execution_status"),
-                "order_id": values.get("order_id"),
-                "requires_manual_review": values.get(
-                    "requires_manual_review", False
+                "execution_status": execution_status,
+                "order_id": record.order_id or values.get("order_id"),
+                "requires_manual_review": (
+                    False
+                    if record.status in {
+                        TaskStatus.COMPLETED.value,
+                        TaskStatus.NOT_CREATED.value,
+                    }
+                    else (
+                        record.requires_manual_review
+                        or bool(values.get("requires_manual_review", False))
+                    )
+                ),
+                "execution_key": (
+                    record.execution_key or values.get("execution_key")
                 ),
                 "last_error": last_error,
             },
-            recoverable=False,
+            recoverable=recoverable,
         )
+
+    def _terminal_snapshot_result(
+        self,
+        record: TaskRecord,
+        values: dict,
+        thread_id: str,
+    ) -> TaskRunResult:
+        return self._record_snapshot_result(record, values, thread_id)
 
     async def _snapshot(self, task_id: str, config: dict, context) -> TaskRunResult:
         record = await self._tasks.get(task_id)
@@ -565,6 +610,12 @@ class ProcurementTaskRunner:
         # parsing/running；终态一旦落库，读取侧不得把它反向覆盖。
         if record is not None and record.status in _TERMINAL_STATUSES:
             return self._terminal_snapshot_result(
+                record,
+                values,
+                config["configurable"]["thread_id"],
+            )
+        if record is not None and record.status in _RECONCILED_STATUSES:
+            return self._record_snapshot_result(
                 record,
                 values,
                 config["configurable"]["thread_id"],
@@ -620,6 +671,7 @@ class ProcurementTaskRunner:
                 "requires_manual_review": values.get(
                     "requires_manual_review", False
                 ),
+                "execution_key": values.get("execution_key"),
                 "last_error": values.get("last_error"),
             },
             recoverable=bool(snapshot.next),

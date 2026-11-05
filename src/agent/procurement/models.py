@@ -26,6 +26,8 @@ class TaskStatus(StrEnum):
     CANCELLED = "cancelled"
     RUNNING = "running"
     AWAITING_RETRY = "awaiting_retry"
+    AWAITING_REVIEW = "awaiting_review"
+    NOT_CREATED = "not_created"
     ORPHANED = "orphaned"  # 孤儿
 
 
@@ -65,6 +67,7 @@ class VerificationOutcome(StrEnum):
     CANCELLED = "cancelled"
     MISMATCH = "mismatch"
     UNKNOWN = "unknown"
+    UNAVAILABLE = "unavailable"
 
 
 # ============================================================
@@ -304,6 +307,10 @@ class TaskRecord(BaseModel):
     updated_at: datetime
     resumed_at: datetime | None = None
     completed_at: datetime | None = None
+    order_id: str | None = None
+    requires_manual_review: bool = False
+    execution_key: str | None = None
+    reconciled_at: datetime | None = None
 
 
 class TaskRunResult(BaseModel):
@@ -333,6 +340,7 @@ class ExecutionRecord(BaseModel):
 
     attempt_count: int = 0
     verification_attempts: int = 0
+    verification_unavailable_attempts: int = 0
     requires_manual_review: bool = False
     remote_status: int | None = None
 

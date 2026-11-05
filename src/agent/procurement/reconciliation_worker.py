@@ -64,13 +64,16 @@ class ReconciliationWorker:
                 if stats.scanned:
                     logger.info(
                         "采购订单对账：scanned=%s succeeded=%s failed=%s "
-                        "needs_review=%s unknown=%s errors=%s",
+                        "needs_review=%s unknown=%s errors=%s "
+                        "tasks_updated=%s task_sync_errors=%s",
                         stats.scanned,
                         stats.succeeded,
                         stats.failed,
                         stats.needs_review,
                         stats.still_unknown,
                         stats.errors,
+                        stats.tasks_updated,
+                        stats.task_sync_errors,
                     )
             except Exception:
                 logger.exception("采购订单对账 worker 异常")

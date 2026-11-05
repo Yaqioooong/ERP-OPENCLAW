@@ -1018,6 +1018,22 @@ def build_nodes(deps: ProcurementDependencies) -> dict[str, Callable]:
         }
 
     async def cancel_task(state, runtime):
+        if state.get("execution_status") == ExecutionStatus.UNKNOWN.value:
+            # 订单可能已创建，不能把“用户停止重试”当成普通取消。
+            return {
+                "status": TaskStatus.AWAITING_REVIEW.value,
+                "requires_manual_review": True,
+                "last_error": {
+                    "code": "ORDER_OUTCOME_UNKNOWN_AFTER_CANCEL",
+                    "retryable": False,
+                    "message": (
+                        "任务已停止重试，但订单结果仍未确认；"
+                        "订单可能已创建，请人工核对。"
+                    ),
+                },
+                "updated_at": deps.now().isoformat(),
+                "node_history": ["cancel_task"],
+            }
         return {
             "status": TaskStatus.CANCELLED.value,
             "updated_at": deps.now().isoformat(),

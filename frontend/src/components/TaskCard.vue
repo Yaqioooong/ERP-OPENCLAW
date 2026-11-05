@@ -64,6 +64,8 @@ const STATUS = {
   need_info: '待补充',
   awaiting_approval: '待审批',
   awaiting_retry: '待恢复',
+  awaiting_review: '待人工复核',
+  not_created: '确认未创建',
   approved_pending_execution: '已批准',
   executing: '下单中',
   verifying: '核验中',
@@ -76,7 +78,7 @@ const STATUS = {
 
 const statusLabel = computed(() => STATUS[status.value] || '已创建')
 const awaiting = computed(() => status.value === 'awaiting_approval')
-const pending = computed(() => ['need_info', 'awaiting_retry'].includes(status.value))
+const pending = computed(() => ['need_info', 'awaiting_retry', 'awaiting_review', 'not_created'].includes(status.value))
 
 const pulse = computed(() =>
   ['creating', 'running', 'parsing', 'analyzing', 'executing', 'verifying'].includes(
@@ -109,9 +111,12 @@ const summary = computed(() => {
       data?.state_summary?.order_id || data?.state_summary?.order_number
     return orderId ? `订单已创建：${orderId}` : '采购流程已完成'
   }
-  if (
-    ['failed', 'rejected', 'cancelled', 'orphaned'].includes(status.value)
-  ) {
+  if (status.value === 'cancelled') {
+    return data?.state_summary?.execution_status === 'unknown'
+      ? '任务已取消，订单结果待人工核对'
+      : '任务已取消'
+  }
+  if (['failed', 'rejected', 'orphaned'].includes(status.value)) {
     return (
       data?.interrupt?.last_error?.message ||
       data?.state_summary?.last_error?.message ||
@@ -121,6 +126,8 @@ const summary = computed(() => {
   if (status.value === 'need_info') return '还缺少采购条件，需要补充'
   if (status.value === 'awaiting_approval') return '方案已生成，等待你审批'
   if (status.value === 'awaiting_retry') return '任务中断，需要选择重试或取消'
+  if (status.value === 'awaiting_review') return '订单结果需要人工复核'
+  if (status.value === 'not_created') return '已确认未创建，可人工复核或重新发起'
   if (!props.taskId) return '正在把采购需求交给分析代理…'
   if (!isCurrent.value) return '点击查看任务进度与审批'
   return '正在分析需求，生成采购方案…'
@@ -129,6 +136,7 @@ const summary = computed(() => {
 const actionLabel = computed(() => {
   if (awaiting.value || pending.value) return '打开处理'
   if (status.value === 'completed') return '查看结果'
+  if (status.value === 'cancelled') return '查看详情'
   if (tone.value === 'is-error') return '查看原因'
   return '查看进度'
 })

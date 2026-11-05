@@ -170,7 +170,7 @@ let streamGeneration = 0
 const hasTask = computed(() => taskStore.isForThread(currentThreadId.value))
 
 const taskPending = computed(() =>
-  ['awaiting_approval', 'awaiting_retry', 'need_info'].includes(
+  ['awaiting_approval', 'awaiting_retry', 'awaiting_review', 'not_created', 'need_info'].includes(
     taskStore.task.value?.status,
   ),
 )

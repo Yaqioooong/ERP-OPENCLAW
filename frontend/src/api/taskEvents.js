@@ -6,6 +6,7 @@ const TASK_EVENT_TYPES = [
   'task.completed',
   'task.failed',
   'task.cancelled',
+  'task.reconciled',
   'tool.started',
   'tool.completed',
   'task.heartbeat',

@@ -51,6 +51,8 @@ class ReconciliationStats:
     needs_review: int = 0
     still_unknown: int = 0
     errors: int = 0
+    tasks_updated: int = 0
+    task_sync_errors: int = 0
 
 
 def _pick(record: dict[str, Any], *keys: str) -> Any:
@@ -240,6 +242,7 @@ class OrderReconciler:
         max_attempts: int = PROCUREMENT_RECONCILE_MAX_ATTEMPTS,
         confirm_attempts: int = PROCUREMENT_RECONCILE_CONFIRM_ATTEMPTS,
         confirm_min_seconds: int = PROCUREMENT_RECONCILE_CONFIRM_MIN_SECONDS,
+        task_service: Any | None = None,
     ):
         self._executions = executions
         self._gateway = gateway
@@ -248,6 +251,11 @@ class OrderReconciler:
         self._max_attempts = max_attempts
         self._confirm_attempts = confirm_attempts
         self._confirm_min_seconds = confirm_min_seconds
+        self._task_service = task_service
+
+    def set_task_service(self, task_service: Any | None) -> None:
+        """由 runtime 注入：把对账结果回写到采购任务。"""
+        self._task_service = task_service
 
     async def verify_by_task(self, task_id: str) -> OrderVerificationResult:
         record = await self._executions.get_by_task(task_id)
@@ -322,16 +330,16 @@ class OrderReconciler:
         try:
             order = await self._lookup(record)
         except (GatewayUnavailable, GatewayTimeout, GatewayBusinessError) as exc:
-            await self._executions.mark_still_unknown(
+            await self._executions.mark_verification_unavailable(
                 idempotency_key=record.idempotency_key,
                 message=str(exc),
                 verification={"outcome": "unavailable", "message": str(exc)},
                 now=self._now(),
             )
             return VerificationResult(
-                outcome=VerificationOutcome.UNKNOWN,
+                outcome=VerificationOutcome.UNAVAILABLE,
                 message=f"订单服务不可用：{exc}",
-                attempts=record.verification_attempts + 1,
+                attempts=record.verification_unavailable_attempts + 1,
             )
 
         if order is None:
@@ -436,15 +444,39 @@ class OrderReconciler:
                 continue
 
             stats.verified += 1
+            await self._apply_task_result(record, result, stats)
             if result.outcome == VerificationOutcome.SUCCEEDED:
                 stats.succeeded += 1
             elif result.outcome == VerificationOutcome.MISMATCH:
                 stats.needs_review += 1
-            elif result.outcome == VerificationOutcome.UNKNOWN:
+            elif result.outcome in {
+                VerificationOutcome.UNKNOWN,
+                VerificationOutcome.UNAVAILABLE,
+            }:
                 stats.still_unknown += 1
             else:
                 stats.failed += 1
         return stats
+
+    async def _apply_task_result(
+        self,
+        record: ExecutionRecord,
+        result: VerificationResult,
+        stats: ReconciliationStats,
+    ) -> None:
+        if self._task_service is None:
+            return
+        try:
+            changed = await self._task_service.apply_verification(record, result)
+            if changed:
+                stats.tasks_updated += 1
+        except Exception:
+            stats.task_sync_errors += 1
+            logger.exception(
+                "采购任务对账回写失败 task_id=%s key=%s",
+                record.task_id,
+                record.idempotency_key,
+            )
 
     async def get_execution(self, idempotency_key: str) -> ExecutionRecord | None:
         return await self._executions.get(idempotency_key)
@@ -454,6 +486,9 @@ class OrderReconciler:
             now=self._now(),
             limit=limit,
         )
+
+    async def list_manual_review(self, *, limit: int = 50) -> list[ExecutionRecord]:
+        return await self._executions.list_manual_review(limit=limit)
 
     async def manual_resolve(
         self,
@@ -636,6 +671,15 @@ class OrderReconciler:
                     message=result.message,
                 ),
                 requires_manual_review=True,
+            )
+        if result.outcome == VerificationOutcome.UNAVAILABLE:
+            return OrderVerificationResult(
+                status=ExecutionStatus.UNKNOWN,
+                error=ToolError(
+                    code="ORDER_VERIFY_UNAVAILABLE",
+                    retryable=True,
+                    message=result.message,
+                ),
             )
         return OrderVerificationResult(
             status=ExecutionStatus.UNKNOWN,

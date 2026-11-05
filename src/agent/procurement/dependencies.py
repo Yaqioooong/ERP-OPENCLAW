@@ -30,6 +30,7 @@ from agent.procurement.task_events import (
     PostgresTaskEventStore,
     TaskEventService,
 )
+from agent.procurement.task_reconciliation import TaskReconciliationService
 from agent.procurement.task_repository import PostgresTaskRepository
 from agent.procurement.task_runner import ProcurementTaskRunner
 
@@ -184,6 +185,7 @@ async def get_procurement_graph():
 
 
 _TASK_RUNNER: ProcurementTaskRunner | None = None
+_TASK_RECONCILER: TaskReconciliationService | None = None
 
 
 async def get_task_event_service() -> TaskEventService:
@@ -207,17 +209,35 @@ async def get_task_runner() -> ProcurementTaskRunner:
                 "CheckPointer 未初始化：请先调用 initialize_redis_checkpointer()"
             )
 
+        deps = await get_procurement_dependencies()
         graph = await get_procurement_graph()
         repository = PostgresTaskRepository(await get_database())
         await repository.setup()
+        event_service = await get_task_event_service()
+        global _TASK_RECONCILER
+        _TASK_RECONCILER = TaskReconciliationService(
+            tasks=repository,
+            events=event_service,
+        )
+        if deps.order_reconciler is not None:
+            deps.order_reconciler.set_task_service(_TASK_RECONCILER)
         _TASK_RUNNER = ProcurementTaskRunner(
             graph=graph,
             task_repository=repository,
-            event_service=await get_task_event_service(),
+            event_service=event_service,
         )
         await _TASK_RUNNER.reconcile()
 
     return _TASK_RUNNER
+
+
+async def get_task_reconciliation_service() -> TaskReconciliationService:
+    global _TASK_RECONCILER
+    if _TASK_RECONCILER is None:
+        await get_task_runner()
+    if _TASK_RECONCILER is None:
+        raise RuntimeError("采购任务对账回写服务未初始化")
+    return _TASK_RECONCILER
 
 
 async def get_order_reconciler() -> OrderReconciler:
@@ -256,8 +276,9 @@ async def stop_reconciliation_worker() -> None:
 
 
 async def close_task_runner() -> None:
-    global _TASK_RUNNER, _PROCUREMENT_GRAPH, _PROCUREMENT_DEPS, _RECONCILER, _DATABASE, _EVENT_SERVICE
+    global _TASK_RUNNER, _TASK_RECONCILER, _PROCUREMENT_GRAPH, _PROCUREMENT_DEPS, _RECONCILER, _DATABASE, _EVENT_SERVICE
     _TASK_RUNNER = None
+    _TASK_RECONCILER = None
     _PROCUREMENT_GRAPH = None
     _PROCUREMENT_DEPS = None
     _RECONCILER = None

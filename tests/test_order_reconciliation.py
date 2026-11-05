@@ -168,9 +168,36 @@ async def test_gateway_unavailable_stays_unknown(db):
     result = await reconciler.verify_by_task("TASK-1")
 
     assert result.status == ExecutionStatus.UNKNOWN
+    assert result.error.code == "ORDER_VERIFY_UNAVAILABLE"
     record = await repository.get("KEY-1")
     assert record.status == ExecutionStatus.UNKNOWN
-    assert record.verification_attempts == 1
+    assert record.verification_attempts == 0
+    assert record.verification_unavailable_attempts == 1
+
+
+@pytest.mark.anyio
+async def test_unavailable_does_not_advance_not_found_confirmation(db):
+    gateway = FakeGateway(None, unavailable=True)
+    reconciler, repository = await make_reconciler(db, gateway)
+
+    first = await reconciler.verify_by_task("TASK-1")
+    assert first.status == ExecutionStatus.UNKNOWN
+    assert first.error.code == "ORDER_VERIFY_UNAVAILABLE"
+
+    # 服务恢复后，第一次“查询成功但为空”只算第 1 次未找到。
+    gateway.unavailable = False
+    second = await reconciler.verify_by_task("TASK-1")
+    assert second.status == ExecutionStatus.UNKNOWN
+    assert second.error.code == "ORDER_RESULT_UNKNOWN"
+
+    # 第二次“查询成功但为空”才达到确认窗口。
+    third = await reconciler.verify_by_task("TASK-1")
+    assert third.status == ExecutionStatus.FAILED
+    assert third.error.code == "ORDER_NOT_FOUND_CONFIRMED"
+
+    record = await repository.get("KEY-1")
+    assert record.verification_attempts == 2
+    assert record.verification_unavailable_attempts == 1
 
 
 @pytest.mark.anyio

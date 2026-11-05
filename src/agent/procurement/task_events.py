@@ -22,6 +22,7 @@ class TaskEventType(StrEnum):
     TASK_COMPLETED = "task.completed"
     TASK_FAILED = "task.failed"
     TASK_CANCELLED = "task.cancelled"
+    TASK_RECONCILED = "task.reconciled"
     TOOL_STARTED = "tool.started"
     TOOL_COMPLETED = "tool.completed"
     TASK_HEARTBEAT = "task.heartbeat"

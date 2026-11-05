@@ -132,12 +132,16 @@ function connect() {
           'task.completed',
           'task.failed',
           'task.cancelled',
+          'task.reconciled',
         ].includes(event.type)
       ) {
         scheduleRefresh()
       }
 
-      if (['task.completed', 'task.failed', 'task.cancelled'].includes(event.type)) {
+      if (
+        ['task.completed', 'task.failed', 'task.cancelled'].includes(event.type) ||
+        (event.type === 'task.reconciled' && event.data?.status === 'completed')
+      ) {
         window.setTimeout(disconnect, 1500)
       }
     },
