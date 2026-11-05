@@ -127,6 +127,7 @@ LANGSMITH_PROJECT=...
 - `MODEL_REQUEST_TIMEOUT_SECONDS`：模型请求超时，默认 `180`。
 - `MODEL_RETRY_MAX_ATTEMPTS`：模型可重试错误的最大重试次数，默认 `2`（共 3 次尝试）。
 - `MODEL_RETRY_INITIAL_DELAY_SECONDS` / `MODEL_RETRY_MAX_DELAY_SECONDS`：指数退避初始/上限，默认 `1.0` / `8.0`。
+- `HEALTH_CHECK_TIMEOUT_SECONDS` / `HEALTH_CACHE_TTL_SECONDS`：健康检查单项超时/缓存，默认 `2` / `5`。
 
 ### 4. 运行评测
 
@@ -174,7 +175,15 @@ python start_web.py
 - 后端：<http://localhost:8090>
 - 接口文档：<http://localhost:8090/docs>
 
-Agent 初始化（创建沙箱、加载 MCP 工具、组装子 Agent）通常需要 30–60 秒，启动脚本会等待 `/health` 就绪后再拉起前端。
+Agent 初始化（创建沙箱、加载 MCP 工具、组装子 Agent）通常需要 30–60 秒。服务会先启动并在后台初始化，启动脚本等待 `/ready` 返回 `ready` 后再拉起前端；初始化期间 `/live` 可用，`/ready` 返回 `initializing`，依赖失败时返回 503 + 逐项 `checks`。
+
+健康探针：
+
+- `GET /live`：进程存活，恒 200；
+- `GET /ready`：检查 Redis / PostgreSQL / ERP MCP / 沙箱 / Agent / 采购 runtime；全部就绪 200，否则 503；
+- `GET /health`：兼容旧脚本，健康 200 + `healthy`，不健康 503 + `degraded`，body 含 `phase` 与 `checks`。
+
+单项检查默认 2s 超时、结果缓存 5s；可用 `HEALTH_CHECK_TIMEOUT_SECONDS`、`HEALTH_CACHE_TTL_SECONDS` 调整。
 
 分别启动各服务：
 

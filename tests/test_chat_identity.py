@@ -37,6 +37,14 @@ def build_app(user: AuthenticatedUser | None, ownership: FakeOwnership):
     return app
 
 
+@pytest.fixture(autouse=True)
+def _agent_ready(monkeypatch):
+    """聊天端点现在会检查 Agent 就绪；身份测试只关心鉴权。"""
+    monkeypatch.setattr(chat.agent_loader, "_initialized", True)
+    monkeypatch.setattr(chat.agent_loader, "_agent", object())
+    monkeypatch.setattr(chat.agent_loader, "_last_error", None)
+
+
 @pytest.fixture
 def stream_calls(monkeypatch):
     calls: list[dict] = []

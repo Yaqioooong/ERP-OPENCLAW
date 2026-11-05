@@ -718,6 +718,20 @@ def _claim_thread(thread_id: str, user_id: str) -> None:
         raise _thread_http_error(exc) from exc
 
 
+def _require_agent_ready() -> None:
+    """Agent 未就绪时返回 503，而不是让请求进入流式生成后再 500。"""
+    if agent_loader.is_ready:
+        return
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "AGENT_NOT_READY",
+            "message": "Agent 正在初始化或依赖不可用，请稍后重试。",
+            "retryable": True,
+        },
+    )
+
+
 def _build_context(user: AuthenticatedUser, thread_id: str) -> ProcurementContext:
     return ProcurementContext(
         user_id=user.user_id,
@@ -746,6 +760,8 @@ async def chat_stream(
         thread_id = str(uuid.uuid4())
         _claim_thread(thread_id, user.user_id)
 
+    # 先完成身份/归属校验，未就绪的 503 不能掩盖 401/403。
+    _require_agent_ready()
     context = _build_context(user, thread_id)
     return StreamingResponse(
         stream_chat_response(
@@ -777,6 +793,8 @@ async def chat_resume(
     """
     thread_id = _normalize_thread_id(thread_id)
     _verify_thread_access(thread_id, user.user_id)
+    # 先完成身份/归属校验，未就绪的 503 不能掩盖 401/403。
+    _require_agent_ready()
     context = _build_context(user, thread_id)
 
     return StreamingResponse(

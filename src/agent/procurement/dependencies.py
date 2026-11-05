@@ -239,6 +239,15 @@ async def get_reconciliation_worker() -> ReconciliationWorker:
     return _WORKER
 
 
+def task_runner_ready() -> bool:
+    """健康检查只读：不触发懒初始化。"""
+    return _TASK_RUNNER is not None
+
+
+def reconciliation_worker_ready() -> bool:
+    return bool(_WORKER is not None and _WORKER.is_running)
+
+
 async def stop_reconciliation_worker() -> None:
     global _WORKER
     if _WORKER is not None:

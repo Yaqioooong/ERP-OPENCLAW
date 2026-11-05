@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import uuid
 from datetime import datetime
@@ -20,8 +21,18 @@ from agent.config import (
     REDIS_SESSION_META_PREFIX,
     REDIS_THREAD_SET_KEY,
     initialize_redis_checkpointer,
+    initialize_redis_store,
 )
 from agent import config as agent_config
+
+
+_DSN_RE = re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^@\s/]+)@")
+
+
+def _safe_error(exc: BaseException) -> str:
+    """健康状态里只保留异常类型和脱敏后的短文本。"""
+    text = _DSN_RE.sub(r"\1***@", str(exc))
+    return f"{type(exc).__name__}: {text[:300]}"
 
 
 class AgentLoader:
@@ -31,6 +42,7 @@ class AgentLoader:
     _redis_client: Optional[Redis] = None
     _initialized = False
     _agent = None
+    _last_error: Optional[str] = None
     _MAX_FIELD_LENGTH = 500_000
 
     def __new__(cls):
@@ -47,6 +59,9 @@ class AgentLoader:
         try:
             self._redis_client = REDIS_CLIENT
             self._redis_client.ping()
+            # Store 索引也必须懒初始化：导入期连接 Redis 会让应用在
+            # Redis 不可用时连健康检查都起不来。
+            await initialize_redis_store()
             # astream/ainvoke requires an async checkpointer implementation.
             # Initialize it before importing main_agent, which captures the
             # module-level CHECKPOINTER used when compiling the graph.
@@ -55,16 +70,30 @@ class AgentLoader:
 
             self._agent = await get_agent_async()
             self._initialized = True
+            self._last_error = None
             print("[AgentLoader] 初始化完成")
-        except Exception:
+        except Exception as exc:
+            self._agent = None
+            self._initialized = False
             self._redis_client = None
+            self._last_error = _safe_error(exc)
+            print(f"[AgentLoader] 初始化失败: {self._last_error}")
             raise
         return self._agent
 
     @property
+    def is_ready(self) -> bool:
+        return bool(self._initialized and self._agent is not None)
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._last_error
+
+    @property
     def agent(self):
         if self._agent is None:
-            raise RuntimeError("Agent 未初始化，请先调用 initialize() 方法")
+            detail = f"：{self._last_error}" if self._last_error else ""
+            raise RuntimeError(f"Agent 未初始化，请先调用 initialize() 方法{detail}")
         return self._agent
 
     def create_config(
@@ -204,6 +233,7 @@ class AgentLoader:
             self._redis_client.close()
             self._redis_client = None
         self._initialized = False
+        self._last_error = None
 
 
 agent_loader = AgentLoader()

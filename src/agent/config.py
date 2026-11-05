@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -165,4 +166,12 @@ async def initialize_redis_checkpointer():
 
 
 STORE = RedisStore(REDIS_CLIENT)
-STORE.setup()
+
+
+async def initialize_redis_store() -> None:
+    """懒初始化 Redis Store 索引。
+
+    不能放在模块导入期：Redis 不可用时会让应用连导入都失败，健康检查
+    也就没有机会报告真实依赖状态。
+    """
+    await asyncio.to_thread(STORE.setup)

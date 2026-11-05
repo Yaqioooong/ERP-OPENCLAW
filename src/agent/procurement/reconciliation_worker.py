@@ -43,6 +43,10 @@ class ReconciliationWorker:
             finally:
                 self._task = None
 
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
     async def run_once(self):
         return await self._reconciler.reconcile_pending(
             limit=self._batch_size

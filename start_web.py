@@ -56,15 +56,25 @@ def check_backend_ready(max_wait=180):
 
     while time.time() - start_time < max_wait:
         try:
+            import urllib.error
             import urllib.request
-            req = urllib.request.Request("http://localhost:8090/health")
+            req = urllib.request.Request("http://localhost:8090/ready")
             response = urllib.request.urlopen(req, timeout=5)
             if response.status == 200:
                 data = response.read().decode('utf-8')
-                if 'healthy' in data:
+                if '"status": "ready"' in data or '"status":"ready"' in data:
                     print("[System] Backend is ready!")
                     return True
-        except:
+        except urllib.error.HTTPError as exc:
+            # 503 时输出 checks，便于区分“还在初始化”和“依赖失败”。
+            try:
+                body = exc.read().decode('utf-8', errors='replace')
+            except Exception:
+                body = ""
+            elapsed = int(time.time() - start_time)
+            if elapsed % 10 < 2 and body:
+                print(f"[System] Not ready ({elapsed}s): {body[:1200]}")
+        except Exception:
             pass
         time.sleep(2)
         elapsed = int(time.time() - start_time)
